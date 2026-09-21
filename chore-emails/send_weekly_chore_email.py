@@ -18,7 +18,7 @@ from rotation import (  # noqa: E402
     parse_force_date,
     week_label,
 )
-from send_history import already_sent, record_success  # noqa: E402
+from send_history import already_sent, clear_sent, record_success  # noqa: E402
 from warm_kitchen import (  # noqa: E402
     render_weekly_html,
     render_weekly_text,
@@ -102,6 +102,11 @@ def main() -> int:
         help="Record send_key as sent (after external SMTP/AgentMail success)",
     )
     parser.add_argument(
+        "--unmark-sent",
+        action="store_true",
+        help="Forget send_key so this week can be re-sent (e.g. resending a fixed layout)",
+    )
+    parser.add_argument(
         "--payload-only",
         action="store_true",
         help="Print payload_for_agent() JSON only",
@@ -110,6 +115,11 @@ def main() -> int:
 
     payload = payload_for_agent(args.force_date)
     key = payload["send_key"]
+
+    if args.unmark_sent:
+        removed = clear_sent(key)
+        print(json.dumps({"action": "unmarked_sent", "send_key": key, "removed": removed}))
+        return 0
 
     if args.check_only:
         if payload["already_sent"]:

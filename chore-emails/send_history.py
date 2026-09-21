@@ -71,3 +71,30 @@ def record_sent(key: str, meta: dict | None = None) -> None:
 def record_success(send_key: str, meta: dict | None = None) -> None:
     """Alias for routines / agent after MCP send confirms success."""
     record_sent(send_key, meta)
+
+
+def clear_sent(key: str) -> bool:
+    """Drop a send_key so that period can be sent again. Returns True if removed.
+
+    Needed when a delivered email has to be re-sent — a botched layout, a wrong
+    recipient — because the duplicate guard would otherwise refuse forever.
+    """
+    _ensure_file()
+    with open(HISTORY_PATH, "r+", encoding="utf-8") as fh:
+        if fcntl is not None:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            data = _read_unlocked(fh)
+            if key not in data.get("sent", {}):
+                return False
+            del data["sent"][key]
+            fh.seek(0)
+            fh.truncate()
+            json.dump(data, fh, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+            return True
+        finally:
+            if fcntl is not None:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
