@@ -1,0 +1,101 @@
+{
+  "timezone": "America/Indiana/Indianapolis",
+  "rotation_anchor": {
+    "monday": "2026-09-21",
+    "week": "B",
+    "confirmed": true,
+    "confirmed_by": "Brandon",
+    "confirmed_at": "2026-09-17"
+  },
+  "participants": {
+    "Brandon": {
+      "accent": "#E5654A",
+      "icon_tint": "#FCEDE9",
+      "check_tint": "#FCF0ED"
+    },
+    "Kaleah": {
+      "accent": "#2F9F86",
+      "icon_tint": "#E6F3F0",
+      "check_tint": "#EAF5F3"
+    }
+  },
+  "email": {
+    "transport": "agentmail",
+    "inboxId": "brandon-grok-team@agentmail.to",
+    "from": "brandon-grok-team@agentmail.to",
+    "recipients": [
+      "Brandon.Wrin@icloud.com",
+      "klwolf23@gmail.com"
+    ]
+  },
+  "weekday_chores": {
+    "Monday": [
+      "Empty Trash Cans",
+      "Whites"
+    ],
+    "Tuesday": [
+      "Upstairs Bathroom",
+      "Change the Sheets"
+    ],
+    "Wednesday": [
+      "Dishes & Counters",
+      "Cat Water & Food"
+    ],
+    "Thursday": [
+      "Wipe Couch & Chairs",
+      "Downstairs Bathroom"
+    ],
+    "Friday": [
+      "Clean Litter-box",
+      "Vacuum Upstairs"
+    ]
+  },
+  "week_a_ownership": {
+    "Monday": [
+      "Brandon",
+      "Kaleah"
+    ],
+    "Tuesday": [
+      "Brandon",
+      "Kaleah"
+    ],
+    "Wednesday": [
+      "Brandon",
+      "Kaleah"
+    ],
+    "Thursday": [
+      "Brandon",
+      "Kaleah"
+    ],
+    "Friday": [
+      "Brandon",
+      "Kaleah"
+    ]
+  },
+  "chore_icons": {
+    "Empty Trash Cans": "trash",
+    "Whites": "washer",
+    "Upstairs Bathroom": "tub",
+    "Downstairs Bathroom": "tub",
+    "Change the Sheets": "bed",
+    "Dishes & Counters": "dishes",
+    "Cat Water & Food": "bowl",
+    "Wipe Couch & Chairs": "sofa",
+    "Clean Litter-box": "paw",
+    "Vacuum Upstairs": "vacuum",
+    "_ui_rotate": "rotate",
+    "_ui_home": "home"
+  },
+  "colors": {
+    "oat": "#F4EEE2",
+    "white": "#FFFFFF",
+    "border": "#EFE7DA",
+    "text": "#2C2620",
+    "secondary": "#5A4F42",
+    "muted": "#8A7C6B",
+    "footer_muted": "#A4967F",
+    "pill_bg": "#EFE4D2",
+    "pill_accent": "#A8785A",
+    "rule": "#F0E9DC"
+  }
+}
