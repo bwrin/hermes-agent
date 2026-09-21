@@ -1,0 +1,4 @@
+# Dry-run HTML output
+previews/
+# Optional Pillow venv used only to regenerate icons
+.venv/
