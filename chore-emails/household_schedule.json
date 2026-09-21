@@ -96,6 +96,7 @@
     "footer_muted": "#A4967F",
     "pill_bg": "#EFE4D2",
     "pill_accent": "#A8785A",
-    "rule": "#F0E9DC"
+    "rule": "#F0E9DC",
+    "day_rule": "#E4D9C6"
   }
 }

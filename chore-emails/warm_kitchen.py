@@ -20,12 +20,35 @@ FONT = (
 )
 MAX_W = 420
 
+WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
+
+# Apple Mail truncates long messages and Gmail clips past ~102KB; a clipped
+# weekly chart is what made Week B look like it was missing days. Everything
+# this module renders must stay under this, with room to spare.
+HTML_BUDGET_BYTES = 50_000
+
+# Person-row metrics — the approved daily language. Weekly reuses this row
+# verbatim (no compact variant) so the two emails cannot drift apart.
+ROW_PAD_Y = "16px"
+ROW_WELL = 52
+ROW_ICON = 34
+ROW_CHECK = 22
+ROW_NAME_SIZE = "13px"
+ROW_CHORE_SIZE = "17px"
+
+# Horizontal card padding. The weekly card applies it per day cell instead of
+# on the card itself, so day dividers run edge to edge.
+CARD_PAD_X = "18px"
+
 # Soft cream Warm Kitchen (not zinc / not dark editorial)
 DEFAULT_COLORS = {
     "oat": "#F4EEE2",
     "white": "#FFFFFF",
     "border": "#EFE7DA",
     "rule": "#F0E9DC",
+    # Day-to-day divider on the weekly chart. A shade deeper than `rule` so a
+    # day break never reads the same as the rule between one day's two people.
+    "day_rule": "#E4D9C6",
     "text": "#2C2620",
     "secondary": "#5A4F42",
     "muted": "#8A7C6B",
@@ -59,11 +82,21 @@ def _short_month_day(d: date) -> str:
     return f"{d.strftime('%b')} {d.day}"
 
 
+def _week_range_label(monday: date, friday: date, *, sep: str = " – ") -> str:
+    """'September 21 – 25', or 'September 28 – October 2' across a month break."""
+    if monday.month == friday.month:
+        return f"{monday.strftime('%B')} {monday.day}{sep}{friday.day}"
+    return (
+        f"{monday.strftime('%B')} {monday.day}{sep}"
+        f"{friday.strftime('%B')} {friday.day}"
+    )
+
+
 def weekly_subject(week_label: str, monday: date) -> str:
     friday = monday + timedelta(days=4)
     return (
         f"This Week's Chores — Week {week_label} — "
-        f"{_short_month_day(monday)}–{_short_month_day(friday)}"
+        f"{_week_range_label(monday, friday, sep='–')}"
     )
 
 
@@ -91,38 +124,35 @@ def _ensure_pil():
 
 
 @lru_cache(maxsize=128)
-def _icon_data_uri(name: str, tint_hex: str, encode_px: int | None = None) -> str:
-    """Load monochrome icon mask, recolor, optionally downscale for email size."""
+def _icon_data_uri(name: str, tint_hex: str, encode_px: int) -> str:
+    """Recolor a monochrome icon mask to a person accent, encoded at display size.
+
+    Sources are 128px masks; encoding at the size the email actually renders
+    keeps each data URI near 1KB, which is what lets a ten-row weekly chart
+    stay far below the Apple Mail / Gmail clipping thresholds. Painting one
+    uniform RGB under the mask's alpha also compresses better than recoloring
+    only the opaque pixels. Cached, so an icon/tint pair is encoded once per
+    process and every row that needs it reuses the identical URI string.
+    """
     _ensure_pil()
     from PIL import Image
 
     path = ICONS_DIR / f"{name}.png"
     if not path.exists():
         path = ICONS_DIR / "home.png"
-    im = Image.open(path).convert("RGBA")
-    r, g, b = _hex_rgb(tint_hex)
-    pixels = im.load()
-    w, h = im.size
-    for y in range(h):
-        for x in range(w):
-            pr, pg, pb, pa = pixels[x, y]
-            if pa == 0:
-                continue
-            # Treat near-opaque dark mask as tint; preserve anti-alias alpha
-            pixels[x, y] = (r, g, b, pa)
-    if encode_px and (w != encode_px or h != encode_px):
-        # 2× display size keeps retina sharp while shrinking base64 a lot vs 128px
-        im = im.resize((encode_px, encode_px), Image.Resampling.LANCZOS)
+    alpha = Image.open(path).convert("RGBA").getchannel("A")
+    if alpha.width != encode_px or alpha.height != encode_px:
+        alpha = alpha.resize((encode_px, encode_px), Image.Resampling.LANCZOS)
+    icon = Image.new("RGBA", alpha.size, (*_hex_rgb(tint_hex), 0))
+    icon.putalpha(alpha)
     buf = io.BytesIO()
-    im.save(buf, format="PNG", optimize=True)
+    icon.save(buf, format="PNG", optimize=True)
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
     return f"data:image/png;base64,{b64}"
 
 
 def _img(name: str, tint: str, width: int, height: int, alt: str = "") -> str:
-    # Encode at CSS display size (sources are 128px; downscale keeps HTML small for Apple Mail)
-    encode_px = max(width, height)
-    src = _icon_data_uri(name, tint, encode_px)
+    src = _icon_data_uri(name, tint, max(width, height))
     return (
         f'<img src="{src}" width="{width}" height="{height}" '
         f'alt="{_esc(alt or name)}" style="display:inline-block;margin:0;vertical-align:middle;border:0;outline:none;" />'
@@ -161,7 +191,7 @@ def _header_block(
     )
 
 
-def _outline_checkbox(accent: str, size: int = 22) -> str:
+def _outline_checkbox(accent: str, size: int = ROW_CHECK) -> str:
     """Empty circular outline in person accent — CSS only, email-safe."""
     return (
         f'<div style="width:{size}px;height:{size}px;border-radius:50%;'
@@ -177,51 +207,67 @@ def _person_row(
     participants: dict,
     colors: dict,
     *,
-    compact: bool = False,
     show_rule: bool = False,
-    icon_px: int | None = None,
-    well: int | None = None,
 ) -> str:
+    """One checkbox + tinted icon well + name/chore row, identical in both emails."""
     meta = participants.get(person, {})
     accent = meta.get("accent", "#E5654A")
     icon_tint = meta.get("icon_tint", "#FCEDE9")
-    pad_y = "12px" if compact else "16px"
-    if well is None:
-        well = 44 if compact else 52
-    if icon_px is None:
-        icon_px = 28 if compact else 34
-    check = 20 if compact else 22
-    name_sz = "12px" if compact else "13px"
-    chore_sz = "15px" if compact else "17px"
     top_rule = (
         f"border-top:1px solid {colors['rule']};" if show_rule else ""
     )
-    icon_html = _img(icon, accent, icon_px, icon_px, icon)
+    icon_html = _img(icon, accent, ROW_ICON, ROW_ICON, icon)
     return (
         f'<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
         f'width="100%" style="{top_rule}">'
         f"<tr>"
-        f'<td width="{check + 12}" valign="middle" style="padding:{pad_y} 10px '
-        f'{pad_y} 0;width:{check + 12}px;">'
-        f"{_outline_checkbox(accent, check)}"
+        f'<td width="{ROW_CHECK + 12}" valign="middle" style="padding:{ROW_PAD_Y} 10px '
+        f'{ROW_PAD_Y} 0;width:{ROW_CHECK + 12}px;">'
+        f"{_outline_checkbox(accent)}"
         f"</td>"
-        f'<td width="{well + 12}" valign="middle" style="padding:{pad_y} 12px '
-        f'{pad_y} 0;width:{well + 12}px;">'
+        f'<td width="{ROW_WELL + 12}" valign="middle" style="padding:{ROW_PAD_Y} 12px '
+        f'{ROW_PAD_Y} 0;width:{ROW_WELL + 12}px;">'
         f'<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
-        f'width="{well}" height="{well}" style="border-radius:14px;">'
-        f'<tr><td bgcolor="{icon_tint}" width="{well}" height="{well}" align="center" '
-        f'valign="middle" style="background-color:{icon_tint}!important;width:{well}px;'
-        f'height:{well}px;border-radius:14px;text-align:center;">'
+        f'width="{ROW_WELL}" height="{ROW_WELL}" style="border-radius:14px;">'
+        f'<tr><td bgcolor="{icon_tint}" width="{ROW_WELL}" height="{ROW_WELL}" align="center" '
+        f'valign="middle" style="background-color:{icon_tint}!important;width:{ROW_WELL}px;'
+        f'height:{ROW_WELL}px;border-radius:14px;text-align:center;">'
         f"{icon_html}</td></tr></table>"
         f"</td>"
-        f'<td valign="middle" style="padding:{pad_y} 0;">'
-        f'<div style="font-family:{FONT};color:{accent};font-size:{name_sz};'
+        f'<td valign="middle" style="padding:{ROW_PAD_Y} 0;">'
+        f'<div style="font-family:{FONT};color:{accent};font-size:{ROW_NAME_SIZE};'
         f'font-weight:700;letter-spacing:0.08em;text-transform:uppercase;'
         f'margin:0 0 3px 0;">{_esc(person)}</div>'
-        f'<div style="font-family:{FONT};color:{colors["text"]};font-size:{chore_sz};'
+        f'<div style="font-family:{FONT};color:{colors["text"]};font-size:{ROW_CHORE_SIZE};'
         f'font-weight:700;letter-spacing:-0.01em;line-height:1.3;">'
         f"{_esc(chore)}</div>"
         f"</td></tr></table>"
+    )
+
+
+def _day_label(
+    day_name: str,
+    colors: dict,
+    date_label: str = "",
+    *,
+    color: str | None = None,
+) -> str:
+    """ALL CAPS day heading; weekly also carries the calendar date on the right."""
+    date_cell = ""
+    if date_label:
+        date_cell = (
+            f'<td align="right" valign="bottom" style="font-family:{FONT};font-size:11px;'
+            f"font-weight:600;letter-spacing:0.06em;text-transform:uppercase;"
+            f'color:{colors["footer_muted"]};padding:0 0 8px 0;">{_esc(date_label)}</td>'
+        )
+    return (
+        f'<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
+        f'width="100%"><tr>'
+        f'<td align="left" style="font-family:{FONT};font-size:11px;font-weight:600;'
+        f"letter-spacing:0.12em;text-transform:uppercase;"
+        f'color:{color or colors["muted"]};padding:0 0 8px 0;">{_esc(day_name.upper())}</td>'
+        f"{date_cell}"
+        f"</tr></table>"
     )
 
 
@@ -299,8 +345,58 @@ def _shell(body_inner: str, colors: dict) -> str:
     )
 
 
+def _weekly_day_cell(
+    day_name: str,
+    d: date,
+    rows: list,
+    participants: dict,
+    colors: dict,
+    *,
+    first: bool,
+    last: bool,
+) -> str:
+    """One day of the weekly chart: a row of the single card's inner table.
+
+    The divider and the horizontal padding live on this cell rather than on the
+    card, so each day break is a hairline running the full card width — visibly
+    different from the lighter inset rule between the two people of one day.
+    """
+    divider = "" if first else f"border-top:1px solid {colors['day_rule']};"
+    pad_top = "20px" if first else "18px"
+    pad_bottom = "14px" if last else "2px"
+    if rows:
+        blocks = "".join(
+            _person_row(
+                a["person"],
+                a["chore"],
+                a.get("icon", "home"),
+                participants,
+                colors,
+                show_rule=(j > 0),
+            )
+            for j, a in enumerate(rows)
+        )
+    else:
+        # A day is never dropped silently — an empty one says so.
+        blocks = (
+            f'<div style="font-family:{FONT};font-size:15px;font-weight:400;'
+            f'color:{colors["muted"]};padding:6px 0 14px 0;">No chores scheduled</div>'
+        )
+    return (
+        f'<tr><td style="{divider}'
+        f'padding:{pad_top} {CARD_PAD_X} {pad_bottom} {CARD_PAD_X};">'
+        f"{_day_label(day_name, colors, _short_month_day(d).upper(), color=colors['secondary'])}"
+        f"{blocks}</td></tr>"
+    )
+
+
 def render_weekly_html(week_data: dict, schedule: dict | None = None) -> str:
-    """One-card weekly chart matching daily Warm Kitchen language (clipping-safe)."""
+    """Mon–Fri in ONE card: day sections divided by full-width hairlines.
+
+    Five separate cards made the email both heavy and easy to misread as
+    "days are missing" once a client clipped it, so the whole week is one card
+    with the same person rows the daily email uses.
+    """
     schedule = schedule or _load_schedule()
     participants = schedule["participants"]
     colors = _colors(schedule)
@@ -311,46 +407,29 @@ def render_weekly_html(week_data: dict, schedule: dict | None = None) -> str:
     header = _header_block(
         label,
         "This week's chores",
-        f"{_short_month_day(monday)} – {_short_month_day(friday)}",
+        _week_range_label(monday, friday),
         colors,
     )
 
-    day_names = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
     days = week_data.get("days") or {}
-    sections: list[str] = []
-    for i, day_name in enumerate(day_names):
-        rows = days.get(day_name) or []
-        # Hairline between days (not before Monday)
-        day_top = ""
-        if i > 0:
-            day_top = (
-                f"border-top:1px solid {colors['rule']};"
-                f"padding-top:14px;margin-top:2px;"
-            )
-        day_hdr = (
-            f'<div style="font-family:{FONT};font-size:11px;font-weight:600;'
-            f'letter-spacing:0.12em;text-transform:uppercase;'
-            f'color:{colors["muted"]};padding:0 0 8px 0;">'
-            f"{_esc(day_name.upper())}</div>"
+    last_index = len(WEEKDAYS) - 1
+    day_cells = "".join(
+        _weekly_day_cell(
+            day_name,
+            monday + timedelta(days=i),
+            list(days.get(day_name) or []),
+            participants,
+            colors,
+            first=(i == 0),
+            last=(i == last_index),
         )
-        # Full-size row language (not compact) — slightly smaller icons for clipping budget
-        blocks = "".join(
-            _person_row(
-                a["person"],
-                a["chore"],
-                a.get("icon", "home"),
-                participants,
-                colors,
-                compact=False,
-                show_rule=(j > 0),
-                icon_px=28,
-                well=52,  # keep well size so icons stay centered like daily
-            )
-            for j, a in enumerate(rows)
-        )
-        sections.append(f'<div style="{day_top}">{day_hdr}{blocks}</div>')
-
-    card = _card("".join(sections), colors, padding="20px 18px 14px 18px")
+        for i, day_name in enumerate(WEEKDAYS)
+    )
+    chart = (
+        f'<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
+        f'width="100%">{day_cells}</table>'
+    )
+    card = _card(chart, colors, padding="0")
 
     body = (
         f"<tr><td>{header}</td></tr>"
@@ -372,12 +451,6 @@ def render_daily_html(day_data: dict, schedule: dict | None = None) -> str:
 
     header = _header_block(label, "Today's chores", full, colors)
 
-    day_hdr = (
-        f'<div style="font-family:{FONT};font-size:11px;font-weight:600;'
-        f'letter-spacing:0.12em;text-transform:uppercase;'
-        f'color:{colors["muted"]};padding:0 0 8px 0;">'
-        f"{_esc(weekday.upper())}</div>"
-    )
     blocks = "".join(
         _person_row(
             a["person"],
@@ -389,7 +462,11 @@ def render_daily_html(day_data: dict, schedule: dict | None = None) -> str:
         )
         for i, a in enumerate(day_data["assignments"])
     )
-    card = _card(day_hdr + blocks, colors, padding="20px 18px 14px 18px")
+    card = _card(
+        _day_label(weekday, colors) + blocks,
+        colors,
+        padding="20px 18px 14px 18px",
+    )
 
     body = (
         f"<tr><td>{header}</td></tr>"
@@ -401,15 +478,22 @@ def render_daily_html(day_data: dict, schedule: dict | None = None) -> str:
 
 
 def render_weekly_text(week_data: dict) -> str:
+    monday = date.fromisoformat(week_data["monday"])
+    friday = date.fromisoformat(week_data["friday"])
+    days = week_data.get("days") or {}
     lines = [
         f"Week {week_data['week_label']} chores",
-        f"{week_data['monday']} – {week_data['friday']}",
+        _week_range_label(monday, friday),
         "",
     ]
-    for day, rows in week_data["days"].items():
-        lines.append(day)
+    # Driven by WEEKDAYS, like the HTML — dict order can never drop a day.
+    for i, day_name in enumerate(WEEKDAYS):
+        rows = days.get(day_name) or []
+        lines.append(f"{day_name.upper()} — {_short_month_day(monday + timedelta(days=i))}")
         for a in rows:
             lines.append(f"  {a['person']}: {a['chore']}")
+        if not rows:
+            lines.append("  No chores scheduled")
         lines.append("")
     lines.append("Assignments switch next week.")
     lines.append("Thanks for keeping the house running.")

@@ -28,6 +28,9 @@ _NON_MIRROR_DIRS = {
     "fakes", "fixtures", "honcho_plugin", "install", "integration", "manual",
     "monitoring", "openviking_plugin", "perf_guards", "scripts", "secret_sources",
     "security", "skills", "verify", "website", "computer_use", "hermes_state",
+    # Mirrors chore-emails/, whose hyphen makes it un-importable as a package,
+    # so _source_dirs() (which keys on __init__.py) can never see it.
+    "chore_emails",
 }
 
 # Root-level modules whose tests sit directly in tests/ (no package to mirror).
