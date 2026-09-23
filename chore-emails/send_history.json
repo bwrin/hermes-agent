@@ -1,0 +1,48 @@
+{
+  "sent": {
+    "daily:2026-09-18": {
+      "subject": "Today's Chores \u2014 Friday, September 18",
+      "kind": "daily",
+      "recorded_at": "2026-09-18T21:50:01.726589+00:00"
+    },
+    "weekly:2026-09-21": {
+      "subject": "This Week's Chores \u2014 Week B \u2014 September 21\u201325",
+      "kind": "weekly",
+      "note": "corrected resend after layout fix",
+      "recorded_at": "2026-09-21T14:30:54.275691+00:00"
+    },
+    "daily:2026-09-21": {
+      "subject": "Today's Chores \u2014 Monday, September 21",
+      "kind": "daily",
+      "message_id": "<010001a0c5f2c7ed-41a0ca42-9139-4e54-a09d-203338cf5c29-000000@email.amazonses.com>",
+      "thread_id": "0d5e14be-ef5a-402a-aeac-dbe9b77dc30b",
+      "recipients": [
+        "Brandon.Wrin@icloud.com",
+        "klwolf23@gmail.com"
+      ],
+      "recorded_at": "2026-09-21T21:50:24.362549+00:00"
+    },
+    "daily:2026-09-22": {
+      "subject": "Today's Chores \u2014 Tuesday, September 22",
+      "kind": "daily",
+      "message_id": "<010001a0cb170e2a-5d5b53a4-1178-476c-ad85-253990b95a60-000000@email.amazonses.com>",
+      "thread_id": "63219296-d5fe-4048-8b07-ffa95cbcf58c",
+      "recipients": [
+        "Brandon.Wrin@icloud.com",
+        "klwolf23@gmail.com"
+      ],
+      "recorded_at": "2026-09-22T21:48:13.131356+00:00"
+    },
+    "daily:2026-09-23": {
+      "subject": "Today's Chores \u2014 Wednesday, September 23",
+      "kind": "daily",
+      "message_id": "<010001a0d03d68fe-207ea8b2-9b5c-446d-b745-612b3ee3b1a0-000000@email.amazonses.com>",
+      "thread_id": "3a35cb63-0c52-4a55-b1d8-06880e752f3c",
+      "recipients": [
+        "Brandon.Wrin@icloud.com",
+        "klwolf23@gmail.com"
+      ],
+      "recorded_at": "2026-09-23T21:48:06.613359+00:00"
+    }
+  }
+}
