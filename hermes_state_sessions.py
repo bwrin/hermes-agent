@@ -195,6 +195,35 @@ def session_hide_authorized(*, title: str | None = None, source: str | None = No
     return (room_plumbing or title in _PLUMBING_HIDDEN_TITLES or title.startswith("Group:")
             or (source or "").strip().lower() in INTERNAL_LISTING_SOURCES)
 
+
+# Authorization and writes must cover the same conversation. A parent link alone is not a compression
+# edge: branches, resets and delegated/tool runs keep that link but own independent visibility.
+_HIDDEN_LINEAGE_SQL = f"""
+    WITH RECURSIVE
+      ancestors(id) AS (
+        SELECT ?
+        UNION
+        SELECT parent.id
+        FROM ancestors a
+        JOIN sessions child ON child.id = a.id
+        JOIN sessions parent ON parent.id = child.parent_session_id
+        WHERE parent.end_reason = 'compression'
+          {_non_continuation_child_sql('child.', 'parent.id')}
+      ),
+      lineage(id) AS (
+        SELECT id FROM ancestors
+        UNION
+        SELECT child.id
+        FROM lineage l
+        JOIN sessions parent ON parent.id = l.id
+        JOIN sessions child ON child.parent_session_id = parent.id
+        WHERE parent.end_reason = 'compression'
+          {_non_continuation_child_sql('child.', 'parent.id')}
+      )
+    SELECT s.id, s.title, s.source, s.model_config
+    FROM sessions s JOIN lineage l ON l.id = s.id
+"""
+
 SESSION_STATUS_COMPLETE = "complete"
 SESSION_STATUS_INTERRUPTED = "interrupted"
 SESSION_STATUS_ERROR = "error"
@@ -980,15 +1009,25 @@ class SessionSessionsMixin:
     def set_session_hidden(self, session_id: str, hidden: bool) -> bool:
         """Hide/unhide a session and its compression lineage from the default listing; still resumable.
 
-        Hiding is refused (no write, False) unless some row of the lineage it writes is plumbing
-        (``session_hide_authorized``): a compression tip is untitled while its root holds the title."""
-        if hidden and not any(
-                row and session_hide_authorized(
-                    title=row.get("title"), source=row.get("source"),
-                    room_plumbing=bool(_parse_model_config(row.get("model_config")).get("room_plumbing")))
-                for row in map(self.get_session, self.get_compression_lineage(session_id))):
-            return False
-        return self._set_lineage_column("hidden", session_id, int(hidden))
+        Hiding is refused unless the exact rows being written contain plumbing authority. Resolve that
+        lineage and authorize under the writer lock so a concurrent rename or compression cannot change
+        the conversation between the check and write. Independent forks retain their visibility."""
+        def _do(conn):
+            rows = conn.execute(_HIDDEN_LINEAGE_SQL, (session_id,)).fetchall()
+            if not rows or (hidden and not any(
+                session_hide_authorized(
+                    title=row["title"], source=row["source"],
+                    room_plumbing=bool(_parse_model_config(row["model_config"]).get("room_plumbing")))
+                for row in rows
+            )):
+                return False
+            for ids in _id_chunks([row["id"] for row in rows]):
+                conn.execute(
+                    f"UPDATE sessions SET hidden = ? WHERE id IN ({_session_ids_placeholders(ids)})",
+                    (int(hidden), *ids),
+                )
+            return True
+        return self._execute_write(_do)
 
     def set_session_read(self, session_id: str, read: bool = True) -> bool:
         """Mark read/unread across the compression lineage. ``last_read_at`` is a watermark: unread when

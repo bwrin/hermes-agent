@@ -29,20 +29,23 @@ def _(rid, params: dict) -> dict:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
         try:
-            # The store refuses to hide a non-plumbing row; ``hidden`` in the reply is what took effect.
             if session is not None:
                 key = session["session_key"]
-                applied = db.set_session_hidden(key, hidden)
-                if not applied and db.get_session(key) is None:
+                db.set_session_hidden(key, hidden)
+                if (row := db.get_session(key)) is None:
                     # No row yet: _ensure_session_db_row is born hidden — only if the draft is plumbing.
-                    session["pending_hidden"] = applied = hidden and _live_hide_authorized(session)
+                    session["pending_hidden"] = actual_hidden = hidden and _live_hide_authorized(session)
+                else:
+                    actual_hidden = bool(row.get("hidden"))
             else:
                 # ``resolve_session_id`` follows key/title aliases like the REST pin/archive path.
                 target = _str_param(params, "session_id")
                 if not (key := db.resolve_session_id(target) if hasattr(db, "resolve_session_id") else target):
                     return _err(rid, 4001, "session not found")
-                applied = db.set_session_hidden(key, hidden)
-            return _ok(rid, {"hidden": bool(hidden and applied), "session_key": key})
+                db.set_session_hidden(key, hidden)
+                actual_hidden = bool((db.get_session(key) or {}).get("hidden"))
+            # A refusal leaves an older hidden row unchanged; it does not make that row visible.
+            return _ok(rid, {"hidden": actual_hidden, "session_key": key})
         except Exception as e:
             return _err(rid, 5007, str(e))
 
