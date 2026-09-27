@@ -43,8 +43,8 @@ afterEach(() => {
 it('spins the pending target row without stealing the highlight', () => {
   render(
     <>
-      <BotRow bot={alpha} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />
-      <BotRow bot={bravo} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />
+      <BotRow bot={alpha} onClear={noop} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />
+      <BotRow bot={bravo} onClear={noop} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />
     </>
   )
 

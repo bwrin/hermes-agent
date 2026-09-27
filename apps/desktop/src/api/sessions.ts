@@ -1,3 +1,4 @@
+import { captureConversationRead } from '@/lib/conversation-generation'
 import { isMissingRestEndpoint } from '@/lib/gateway-rpc'
 import { maybeBackfillLegacySessionOwners } from '@/lib/legacy-session-owner-backfill'
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
@@ -457,6 +458,11 @@ export function getSessionMessages(
 
   const sessionScope = sessionScoped(profile)
 
+  const checkConversation = captureConversationRead(id, {
+    connectionId: sessionScope.connectionId || ambientOwnerConnectionId(),
+    profile: sessionScope.profile || getApiRequestProfile()
+  })
+
   if (sessionScope.profile) {
     query.set('profile', sessionScope.profile)
   }
@@ -483,6 +489,10 @@ export function getSessionMessages(
     ...sessionScope,
     path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`,
     ...(options.passive ? { passive: true } : {})
+  }).then(result => {
+    checkConversation(result.conversation_generation, result.session_id)
+
+    return result
   })
 }
 
@@ -614,6 +624,7 @@ export async function getAllSessionMessages(
   let jsonChars = 0
   let offset = 0
   let resolvedSessionId = id
+  let generation: number | undefined
 
   while (true) {
     const page = await getSessionMessages(id, profile, {
@@ -622,6 +633,12 @@ export async function getAllSessionMessages(
       order: 'oldest',
       includeCompacted: true
     })
+
+    if (offset > 0 && page.conversation_generation !== generation) {
+      throw new Error('This conversation was cleared while its history was loading. Please try again.')
+    }
+
+    generation = page.conversation_generation
 
     resolvedSessionId = page.session_id
     jsonChars += (JSON.stringify(page.messages) ?? '').length
@@ -642,7 +659,7 @@ export async function getAllSessionMessages(
     offset += page.messages.length
   }
 
-  return { session_id: resolvedSessionId, messages }
+  return { session_id: resolvedSessionId, messages, conversation_generation: generation }
 }
 
 export function deleteSession(id: string, profile?: ProfileScope): Promise<{ ok: boolean }> {

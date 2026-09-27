@@ -34,6 +34,9 @@ class _DB:
     def get_session_by_title(self, _target):
         return None
 
+    def get_conversation_generation(self, _target):
+        return 0
+
     def resolve_resume_session_id(self, target):
         return target
 

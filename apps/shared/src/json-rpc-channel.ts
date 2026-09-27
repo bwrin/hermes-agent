@@ -1,3 +1,4 @@
+import { ConversationEventFence } from './conversation-event-fence.js'
 import type { GatewayEvent } from './gateway-events.js'
 
 export type GatewayRequestId = number | string
@@ -92,6 +93,8 @@ export interface JsonRpcTransport {
 }
 
 export interface JsonRpcRequestChannelOptions {
+  /** Shared with the WebSocket owner's replay path, which also delivers events. */
+  conversationFence?: ConversationEventFence
   createRequestId?: (nextId: number) => GatewayRequestId
   heartbeatDeadlineMs?: number
   heartbeatIntervalMs?: number
@@ -129,6 +132,8 @@ export interface JsonRpcRequestChannelOptions {
 export type HeartbeatLiveness = 'any-inbound' | 'response'
 
 interface PendingCall {
+  method: string
+  params: Record<string, unknown>
   reject: (error: Error) => void
   resolve: (value: unknown) => void
   timer?: ReturnType<typeof setTimeout>
@@ -184,12 +189,19 @@ export class JsonRpcRequestChannel {
   private lastLivenessAt = 0
   private readonly requestHandlers: ServerRequestHandler[] = []
   private readonly options: Required<
-    Omit<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUnhandledRequest'>
+    Omit<
+      JsonRpcRequestChannelOptions,
+      'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUnhandledRequest'
+    >
   > &
-    Pick<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUnhandledRequest'>
+    Pick<
+      JsonRpcRequestChannelOptions,
+      'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUnhandledRequest'
+    >
 
   constructor(options: JsonRpcRequestChannelOptions = {}) {
     this.options = {
+      conversationFence: options.conversationFence ?? new ConversationEventFence(),
       createRequestId: options.createRequestId ?? ((nextId: number) => `${options.requestIdPrefix ?? 'r'}${nextId}`),
       heartbeatDeadlineMs: options.heartbeatDeadlineMs ?? DEFAULT_HEARTBEAT_DEADLINE_MS,
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
@@ -260,6 +272,8 @@ export class JsonRpcRequestChannel {
       }
 
       const pending: PendingCall = {
+        method,
+        params,
         resolve: value => {
           detachAbort()
           resolve(value as T)
@@ -453,6 +467,14 @@ export class JsonRpcRequestChannel {
         if (frame.error) {
           call.reject(jsonRpcErrorFromFrame(frame.error))
         } else {
+          try {
+            this.options.conversationFence.checkSnapshot(call.method, call.params, frame.result)
+          } catch (error) {
+            call.reject(error as Error)
+
+            return frame
+          }
+
           // Reconnect contract: `session.resume` / `session.activate` /
           // `session.events.since` answer with `open_requests` — the server→
           // client requests still waiting on this session. They cannot ride
@@ -468,6 +490,10 @@ export class JsonRpcRequestChannel {
     }
 
     if (frame.method === 'event' && frame.params && typeof (frame.params as GatewayEvent).type === 'string') {
+      if (!this.options.conversationFence.admit(frame.params as GatewayEvent)) {
+        return frame
+      }
+
       if ((frame.params as GatewayEvent).type === 'gateway.ready') {
         this.advertiseCapabilities()
       }

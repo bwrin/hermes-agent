@@ -68,7 +68,7 @@ describe('clearBotCanonicalChat', () => {
     expect(requestForBot).toHaveBeenCalledWith(bot, 'session.clear_bot_chat', { profile: 'backend-worker' })
     expect(requestForBot.mock.calls[0][2]).not.toHaveProperty('session_id')
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['hermes-bots', 'roster'] })
-    expect(openBotCanonicalChat).toHaveBeenCalledWith(bot, expect.any(Function))
+    expect(openBotCanonicalChat).toHaveBeenCalledWith(bot, { openingStillCurrent: expect.any(Function) })
   })
 
   it('refreshes roster truth without stealing focus when a different chat is on screen', async () => {

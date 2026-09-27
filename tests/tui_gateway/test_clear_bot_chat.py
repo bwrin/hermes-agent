@@ -7,6 +7,7 @@ from unittest.mock import Mock
 from hermes_state import SessionDB
 from tools.bot_live_delivery import claim_pending_delivery, complete_delivery, deliver_to_live_owner
 from tui_gateway import server
+from tui_gateway import event_replay
 
 
 def test_clear_bot_chat_refuses_busy_then_clears_same_named_runtime(monkeypatch, tmp_path):
@@ -29,6 +30,9 @@ def test_clear_bot_chat_refuses_busy_then_clears_same_named_runtime(monkeypatch,
         _flushed_db_message_ids={1},
         _db_flush_scan_prefix=[{"role": "assistant", "content": "old summary"}],
         _codex_reasoning_replay_enabled=False,
+        _usage_anchor={"input_tokens": 99},
+        _turn_base_usage_anchor={"input_tokens": 99},
+        _pending_cli_user_message={"role": "user", "content": "old staged row"},
     )
     session = {
         "agent": agent,
@@ -46,12 +50,16 @@ def test_clear_bot_chat_refuses_busy_then_clears_same_named_runtime(monkeypatch,
     monkeypatch.setattr(server, "get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(server, "_session_has_active_delegations", lambda *_args: False)
     monkeypatch.setattr(server, "_session_info", lambda current, _session=None: {"model": current.model})
-    emitted = Mock()
+    event_replay.reset_replay_state()
+    def record_event(kind, sid, payload):
+        event_replay._stamp_event(server._event_frame(kind, sid, payload))
+    emitted = Mock(side_effect=record_event)
     broadcast = Mock()
     monkeypatch.setattr(server, "_emit", emitted)
     monkeypatch.setattr(server, "_broadcast_global_event", broadcast)
 
     try:
+        record_event("message.complete", "live", {"text": "old answer"})
         refused = server.handle_request({"id": "busy", "method": "session.clear_bot_chat", "params": {}})
         assert refused["error"]["code"] == 4023
         assert db.get_messages_as_conversation("tip", include_ancestors=True, include_compacted=True)
@@ -71,11 +79,18 @@ def test_clear_bot_chat_refuses_busy_then_clears_same_named_runtime(monkeypatch,
         complete_delivery(tmp_path, delivery["delivery_id"], status="cancelled")
 
         cleared = server.handle_request({"id": "clear", "method": "session.clear_bot_chat", "params": {}})
+        history = server.handle_request({"id": "history", "method": "session.history", "params": {"session_id": "live"}})
+        replay = server.handle_request({"id": "replay", "method": "session.events.since", "params": {"session_id": "live", "last_seen": 0}})
+        assert replay["result"]["truncated"]
+        assert all(e["type"] != "message.complete" for e in replay["result"]["events"])
+        assert deliver_to_live_owner(tmp_path, owner, "stale result after clear")["status"] == "cancelled"
     finally:
         server._sessions.pop("live", None)
         db.close()
+        event_replay.reset_replay_state()
 
-    assert cleared["result"] == {"cleared": True, "messages_cleared": 2}
+    assert cleared["result"] == {"cleared": True, "messages_cleared": 2, "conversation_generation": 1}
+    assert history["result"] == {"count": 0, "messages": [], "conversation_generation": 1}
     assert session["history"] == []
     assert session["display_history_prefix"] == []
     assert session["history_version"] == 5
@@ -86,7 +101,14 @@ def test_clear_bot_chat_refuses_busy_then_clears_same_named_runtime(monkeypatch,
     assert agent._db_flush_scan_prefix is None
     assert agent._codex_reasoning_replay_enabled is True
     assert agent._codex_session is None
+    assert agent._usage_anchor is None
+    assert agent._turn_base_usage_anchor is None
+    assert agent._pending_cli_user_message is None
     codex_session.close.assert_called_once_with()
     compressor.on_session_reset.assert_called_once_with()
-    emitted.assert_called_once_with("session.info", "live", {"model": "keep-model"})
-    broadcast.assert_called_once_with("sessions.changed", {})
+    emitted.assert_any_call("session.info", "live", {"model": "keep-model"})
+    clear_payload = emitted.call_args_list[0].args[2]
+    assert clear_payload["session_ids"] == ["root", "tip"]
+    assert clear_payload["conversation_generation"] == history["result"]["conversation_generation"]
+    broadcast.assert_any_call("session.conversation_cleared", clear_payload)
+    broadcast.assert_any_call("sessions.changed", {})

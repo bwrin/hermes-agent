@@ -41,13 +41,14 @@ def find_canonical_owner(profile_home: Path | str) -> dict[str, Any] | None:
     try:
         row = db.get_session_by_title("Bot Chat")
         session_id = db.get_compression_tip(row["id"]) if row else None
+        generation = db.get_conversation_generation(session_id) if session_id else 0
     finally:
         db.close()
     if not session_id:
         return None
     for entry in active_session_registry_snapshot(registry_home=home):
         if entry["session_id"] == session_id:
-            return {**entry, "profile_home": str(home)}
+            return {**entry, "profile_home": str(home), "conversation_generation": generation}
     return None
 
 
@@ -57,17 +58,36 @@ def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None
     meta = (entry or {}).get("metadata") or {}
     if entry and meta.get("bot_live_delivery_consumer") is True and meta.get("live_session_id"):
         return {key: entry[key] for key in ("profile_home", "session_id", "lease_id")} | {
-            "live_session_id": meta["live_session_id"]}
+            "live_session_id": meta["live_session_id"],
+            "conversation_generation": entry["conversation_generation"]}
     return None
 
 
-def _owner(home: Path | str, owner: dict[str, Any]) -> dict[str, str]:
+def _owner(home: Path | str, owner: dict[str, Any]) -> dict[str, Any]:
     pinned = {key: owner.get(key) for key in _OWNER_KEYS}
     if not all(isinstance(value, str) and value for value in pinned.values()):
         raise ValueError("owner requires profile_home, session_id, lease_id and live_session_id")
     if pinned["profile_home"] != str(Path(home).resolve()):
         raise ValueError("owner belongs to a different profile home")
+    if "conversation_generation" in owner:
+        generation = owner["conversation_generation"]
+        if type(generation) is not int or generation < 0:
+            raise ValueError("owner requires a nonnegative conversation generation")
+        pinned["conversation_generation"] = generation
     return pinned
+
+
+def _generation_is_current(home: Path | str, owner: dict[str, Any]) -> bool:
+    from hermes_state import SessionDB
+
+    path = Path(home) / "state.db"
+    if not path.is_file():
+        return owner.get("conversation_generation", 0) == 0
+    db = SessionDB(db_path=path, read_only=True)
+    try:
+        return owner.get("conversation_generation", 0) == db.get_conversation_generation(owner["session_id"])
+    finally:
+        db.close()
 
 
 def _delivery_id(value: str) -> str:
@@ -81,8 +101,8 @@ def _root(home: Path | str) -> Path:
 
 
 def has_mailbox(profile_home: Path | str) -> bool:
-    """Whether any delivery was ever admitted for this profile (the mailbox directory is created on
-    first admission only). A cheap pre-check for pollers: no mailbox means nothing to claim, so the
+    """Whether this profile has used delivery admission or a clear guard.
+    A cheap pre-check for pollers: no mailbox means nothing to claim, so the
     owner lookup — a state.db open plus the exclusive active-session registry lock — can be skipped."""
     return _root(profile_home).is_dir()
 
@@ -221,8 +241,17 @@ def deliver_to_live_owner(
                       sequence=_next_sequence(root), **({"author": dict(author)} if author else {}))
         if notification_category == "diagnostic":
             record["notification_category"] = notification_category
+        # A producer can have captured its owner before clear and waited on the
+        # mailbox lock. Admission time alone does not make its result new work.
+        if not _generation_is_current(profile_home, pinned):
+            _cancel_cleared_delivery(record)
         _write(path, record)
         return record
+
+
+def _cancel_cleared_delivery(record: dict[str, Any]) -> None:
+    record.update(status="cancelled", reply="", error="Bot Chat was cleared before delivery",
+                  reason="conversation_cleared", completed_at=time.time_ns())
 
 
 def _matches(home: Path | str, record: dict, owner: dict) -> bool:
@@ -244,14 +273,11 @@ def _matches(home: Path | str, record: dict, owner: dict) -> bool:
 def pending_delivery_guard(profile_home: Path | str, session_ids: list[str]):
     """Hold mailbox admission while reporting whether this conversation has work.
 
-    A clear operation keeps this guard open through its database commit.  A
-    delivery admitted after the guard is released is therefore new work for the
-    cleared chat; one admitted before it is visible here and blocks the clear.
+    Keep the guard through the database clear and generation increment. Every
+    producer then either blocks clear with pending work, or checks its pinned
+    generation against the committed reset before admission.
     """
     ids = {str(session_id) for session_id in session_ids if session_id}
-    if not _root(profile_home).is_dir():
-        yield False
-        return
     with _locked(profile_home) as root:
         pending = any(
             record is not None
@@ -276,11 +302,17 @@ def claim_pending_delivery(
     if not _root(profile_home).is_dir():
         return None
     with _locked(profile_home) as root:
+        if not _generation_is_current(profile_home, current):
+            return None
         pending = []
         for path in root.glob("*.json"):
             record = _scan_read(path)
             if record is not None and record["status"] == "queued" and _matches(profile_home, record, current):
-                pending.append(record)
+                if record["owner"].get("conversation_generation", 0) != current.get("conversation_generation", 0):
+                    _cancel_cleared_delivery(record)
+                    _write(path, record)
+                else:
+                    pending.append(record)
         if not pending:
             return None
         record = min(pending, key=lambda item: (

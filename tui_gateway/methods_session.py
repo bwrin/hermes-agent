@@ -389,7 +389,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "active_session_lease": None,  # claimed lazily on the first turn (_ensure_active_session_slot)
             "cols": int(params.get("cols", 80)), "created_at": now, "edit_snapshots": {},
             "explicit_cwd": explicit_cwd,
-            "history": history, "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
+            "history": history, "history_lock": threading.Lock(), "history_version": 0, "conversation_generation": 0, "image_counter": 0,
             "seeded": bool(history),  # gates _persist_branch_seed: only create-time history is unpersisted
             "cwd": _completion_cwd(params), "inflight_turn": None, "last_active": now,
             "model_override": session_model_override,
@@ -443,6 +443,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     messages = _history_to_messages(history, profile_home=profile_home)  # hidden seed rows are not on the wire; count what is (as resume does)
     return _ok(rid, {
         "session_id": sid, "stored_session_id": key, "message_count": len(messages),
+        "conversation_generation": 0,
         **({"messages_omitted": True} if copy_parent_history else {"messages": messages}),
         # Reflect the override now so the client doesn't clobber its sticky pick.
         "info": {"model": override.get("model") if override else _session_default_model(_sessions[sid]),
@@ -583,6 +584,7 @@ class _Resume:
 
     def __init__(self, rid, params: dict, target: str) -> None:
         self.rid, self.params, self.target = rid, params, target
+        self.conversation_generation = 0
         self.db, self.owns_db, self.found, self.profile_resume_cwd = None, False, None, ""
         self.cols = _int_param(params, "cols", 80)
         # ``profile`` (app-global remote mode): resume from another local profile's state.db.
@@ -612,6 +614,7 @@ class _Resume:
             self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
             close_on_disconnect=_flag(self.params, "close_on_disconnect"),
             profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
+        record["conversation_generation"] = self.conversation_generation
         if follows_profile:
             record.update(
                 follow_profile_config=True,
@@ -622,7 +625,10 @@ class _Resume:
 
     def claim(self, sid: str, record: dict) -> dict | None:
         """Register ``record`` live under the resume lock, or reuse a concurrent winner's session."""
-        live = _claim_or_reuse_live(sid, self.target, record, None)
+        try:
+            live = _claim_or_reuse_live(sid, self.target, record, None)
+        except ValueError as exc:
+            return _err(self.rid, 4023, str(exc))
         return None if live is None else _resume_reuse_live(self, *live)
 
     def restore(self):
@@ -787,6 +793,11 @@ def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
 
 def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
     """Reuse with _session_resume_lock already held (including the eager double-check)."""
+    if "conversation_generation" in session:
+        with session["history_lock"]:
+            if ctx.db.get_conversation_generation(ctx.target) != session["conversation_generation"]:
+                return _err(ctx.rid, 4023,
+                            "Conversation was cleared in another window. Close this chat window and reopen it.")
     if (refusal := _reattach_refusal(ctx.rid, sid, session)) is not None:
         return refusal
     _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
@@ -813,11 +824,13 @@ def _resume_response(
     if message_count is None:
         message_count = len(count_source) if ctx.omit_messages else len(messages)
     payload = {"session_id": sid, "resumed": ctx.target, "message_count": message_count, "messages": messages,
+               "conversation_generation": ctx.conversation_generation,
                **({"messages_omitted": ctx.omit_messages} if hydrating is None else {"hydrating": hydrating}),
                "info": info, "inflight": None, "running": running, "session_key": ctx.target,
                "started_at": record["created_at"] if started_at is None else started_at, "status": status}
     if auto_continue is not None:
         payload["auto_continue"] = auto_continue
+    payload["info"]["conversation_generation"] = ctx.conversation_generation
     return _ok(ctx.rid, _attach_todo_state(payload, record))
 
 
@@ -913,10 +926,14 @@ def _resume_eager(ctx: _Resume) -> dict:
             with contextlib.suppress(Exception):
                 agent.close()
             return _resume_reuse_live_locked(ctx, *live)
+        if ctx.db.get_conversation_generation(ctx.target) != ctx.conversation_generation:
+            agent.close()
+            return _err(ctx.rid, 4023, "Conversation was cleared while resuming; open it again.")
         try:
             with _profile_build_scope(ctx.profile_home):
                 _init_session(sid, ctx.target, agent, history, cols=ctx.cols, cwd=ctx.profile_resume_cwd,
-                              session_db=ctx.db, source=source, explicit_cwd=bool(ctx.profile_resume_cwd))
+                              session_db=ctx.db, source=source, explicit_cwd=bool(ctx.profile_resume_cwd),
+                              conversation_generation=ctx.conversation_generation)
                 # Ownership TRANSFER: the agent holds the handle for life (AIAgent.close() releases it). The
                 # owns_db drop is UNCONDITIONAL — the session is registered against the handle, so the finally
                 # must not close it even if the transfer was refused (a leak beats "closed database" every
@@ -936,7 +953,8 @@ def _resume_eager(ctx: _Resume) -> dict:
                 # Each turn re-binds HERMES_HOME (mid-turn memory/skills reads); lease claimed lazily on turn 1.
                 if ctx.profile_home is not None:
                     session["profile_home"] = str(ctx.profile_home)
-                session.update(display_history_prefix=display_history_prefix, active_session_lease=None)
+                session.update(display_history_prefix=display_history_prefix, active_session_lease=None,
+                               conversation_generation=ctx.conversation_generation)
         except Exception as e:
             # _init_session registers _sessions[sid] BEFORE its first db read; left in place the fast path
             # would serve that dead session forever.
@@ -964,6 +982,7 @@ def _(rid, params: dict) -> dict:
         if (resp := _resume_locate(ctx)) is not None:
             return resp
         _resume_follow_tip(ctx)
+        ctx.conversation_generation = ctx.db.get_conversation_generation(ctx.target)
         if (resp := _resume_guard(ctx)) is not None:
             return resp
         ctx.profile_resume_cwd = _str_param(ctx.found, "cwd") or _profile_workspace_cwd(ctx.profile_home)
@@ -1067,6 +1086,11 @@ def _(rid, params: dict, session: dict) -> dict:
         if (refusal := _reattach_refusal(rid, sid, session)) is not None:
             return refusal
         with session["history_lock"]:
+            if "conversation_generation" in session:
+                with _session_db(session) as db:
+                    if db is None or db.get_conversation_generation(session["session_key"]) != session["conversation_generation"]:
+                        return _err(rid, 4023,
+                                    "Conversation was cleared in another window. Close this chat window and reopen it.")
             _rebind_live_transport(sid, session, current_transport() or _stdio_transport)
     return _ok(rid, _live_session_payload(
         sid, session, touch=True, omit_messages=is_truthy_value(params.get("omit_messages", False))))
@@ -1859,19 +1883,25 @@ def _(rid, params: dict, session: dict) -> dict:
 
 @_session_method("session.history")
 def _(rid, params: dict, session: dict) -> dict:
-    history = list(session.get("history", []))
-    if session.get("session_key"):
-        with _session_db(session) as db:
-            if db is not None:
-                # include_row_ids: the durable row id is how clients address a persisted turn (reactions,
-                # truncation targets); _history_to_messages forwards it.
-                with contextlib.suppress(Exception):
-                    # The projection in _history_to_messages only forwards row_id when the row carries a
-                    # stamp, so an unstamped read here silently strips the one durable address clients can
-                    # use. See #87059.
-                    history = db.get_messages_as_conversation(
-                        session["session_key"], include_ancestors=True, include_row_ids=True)
-    return _ok(rid, {"count": len(history), "messages": _history_to_messages(history, profile_home=session.get("profile_home"))})
+    with session["history_lock"]:
+        generation = int(session.get("conversation_generation", 0))
+        history = list(session.get("history", []))
+        if session.get("session_key"):
+            with _session_db(session) as db:
+                if db is not None:
+                    # Capture the reset boundary BEFORE reading rows, so an old response
+                    # arriving after clear cannot carry the new generation.
+                    durable_generation = db.get_conversation_generation(session["session_key"])
+                    try:
+                        history = db.get_messages_as_conversation(
+                            session["session_key"], include_ancestors=True, include_row_ids=True)
+                    except Exception:
+                        if durable_generation != generation:
+                            return _err(rid, 5036, "Could not read the cleared conversation. Reopen the chat.")
+                    else:
+                        generation = durable_generation
+    return _ok(rid, {"count": len(history), "conversation_generation": generation,
+                     "messages": _history_to_messages(history, profile_home=session.get("profile_home"))})
 
 
 @_session_method("session.undo", live=True)
@@ -2413,12 +2443,18 @@ def _(rid, params: dict) -> dict:
     except (TypeError, ValueError):
         return _err(rid, -32602, "invalid params: last_seen must be an integer")
     from tui_gateway import event_replay as er
-    frames = er.events_since(sid, last_seen)
-    # ``epoch``: in-process seq — clients reset watermarks when this differs from gateway.ready's.
-    # ``open_requests``: server→client requests still unanswered — the ring cannot carry "a question still
-    # waiting", so the reconnecting client re-delivers these to its request handlers.
-    return _ok(rid, {"events": frames, "latest_seq": er.latest_seq(sid), "truncated": er.is_truncated(sid, last_seen),
-                     "count": len(frames), "epoch": er.replay_epoch(), "open_requests": _open_requests(sid)})
+    session = _sessions.get(sid)
+    live_generation, requests = None, []
+    if session is not None:
+        with session["history_lock"]:
+            live_generation = int(session.get("conversation_generation", 0))
+            requests = _open_requests(sid)
+    snapshot = er.replay_snapshot(sid, last_seen)
+    # A clear after the request snapshot cannot promote an old prompt to the
+    # new generation. Reaped runtimes have replay history but no live requests.
+    if snapshot["conversation_generation"] != live_generation:
+        requests = []
+    return _ok(rid, {**snapshot, "epoch": er.replay_epoch(), "open_requests": requests})
 
 
 @method("session.events.stats")

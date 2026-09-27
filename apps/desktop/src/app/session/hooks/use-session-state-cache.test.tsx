@@ -737,6 +737,31 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
     $sessionStates.set({})
   })
 
+  it('does not graft a cleared conversation error back into the foreground', () => {
+    let cache!: Cache
+    render(<ViewHarness activeSessionId="cleared-runtime" onReady={value => (cache = value)} />)
+    act(() => {
+      cache.updateSessionState(
+        'cleared-runtime',
+        state => ({
+          ...state,
+          messages: [userMessage('before-clear', 'old prompt'), assistantError('old-error', 'Provider failed')]
+        }),
+        'cleared-stored'
+      )
+    })
+    expect($messages.get().some(message => message.error)).toBe(true)
+
+    act(() => {
+      cache.updateSessionState('cleared-runtime', state => ({
+        ...state,
+        messages: [],
+        transcriptAuthorityEpoch: (state.transcriptAuthorityEpoch ?? 0) + 1
+      }))
+    })
+    expect($messages.get()).toEqual([])
+  })
+
   it('does not leak a failed turn into another thread on switch', () => {
     $messages.set([])
     let cache!: Cache

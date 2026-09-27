@@ -40,6 +40,8 @@ export async function clearBotCanonicalChat(bot: RosterRow): Promise<void> {
   // Clearing a background bot must not steal the workspace. If the user also
   // switched away while the RPC was in flight, leave their new focus alone.
   if (wasFocused && isCanonicalChatOnScreen(bot, host.state.focusedStoredSessionId?.get?.())) {
-    await openBotCanonicalChat(bot, () => isCanonicalChatOnScreen(bot, host.state.focusedStoredSessionId?.get?.()))
+    await openBotCanonicalChat(bot, {
+      openingStillCurrent: () => isCanonicalChatOnScreen(bot, host.state.focusedStoredSessionId?.get?.())
+    })
   }
 }

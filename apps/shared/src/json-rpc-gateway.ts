@@ -1,3 +1,4 @@
+import { ConversationEventFence } from './conversation-event-fence.js'
 import type { GatewayEvent, GatewayEventName } from './gateway-events.js'
 import {
   DEFAULT_HEARTBEAT_DEADLINE_MS,
@@ -129,6 +130,7 @@ export class JsonRpcGatewayClient {
   private readonly events = new GatewayEventHub()
   /** Last observed event seq per session_id — drives lossless reconnect replay. */
   private lastSeenSeq = new Map<string, number>()
+  private conversationFence = new ConversationEventFence()
   /** Invalidates an interrupted replay so its async cleanup cannot own a replacement socket. */
   private replayGeneration = 0
   /**
@@ -171,6 +173,7 @@ export class JsonRpcGatewayClient {
       socketFactory: options.socketFactory
     }
     this.channel = new JsonRpcRequestChannel({
+      conversationFence: this.conversationFence,
       createRequestId: this.options.createRequestId,
       heartbeatDeadlineMs: this.options.heartbeatDeadlineMs,
       heartbeatIntervalMs: this.options.heartbeatIntervalMs,
@@ -695,6 +698,10 @@ export class JsonRpcGatewayClient {
   }
 
   private dispatchEvent(event: GatewayEvent): void {
+    if (!this.conversationFence.admit(event)) {
+      return
+    }
+
     // Tag the frame with the process epoch this socket adopted so a consumer
     // holding several sockets to one backend can recognise the same event
     // arriving on each of them; the epoch is per process, not per socket.

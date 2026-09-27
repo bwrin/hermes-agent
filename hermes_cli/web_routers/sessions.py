@@ -636,18 +636,20 @@ async def get_session_messages(
         default_page = limit is None
         latest_page = order == "latest" or (order is None and default_page)
         _limit = 500 if default_page else min(limit, 500)
-        return sid, _limit, db.get_messages(
+        generation = db.get_conversation_generation(sid)
+        return sid, generation, _limit, db.get_messages(
             sid, limit=_limit, offset=offset, latest=latest_page,
             include_compacted=include_compacted)
 
     result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)
     if result is None:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
-    sid, _limit, messages = result
+    sid, generation, _limit, messages = result
     projected_messages = await asyncio.to_thread(
         _project_for_display, messages, home=_history_profile_home(profile))
     return {
         "session_id": sid,
+        "conversation_generation": generation,
         # The same stamp list rows carry, so the Desktop keys a page under the
         # owner it already routes the session by.
         "profile": _serving_profile(profile),
@@ -690,6 +692,7 @@ async def get_session_timeline(
     def _read(db):
         sid = _timeline_session_id(db, session_id, owner)
         return {"session_id": sid, "profile": owner,
+                "conversation_generation": db.get_conversation_generation(sid),
                 **read_timeline(db, sid, limit=limit, after_row_id=after_row_id)}
 
     return await asyncio.to_thread(_with_db, profile, _read, read_only=True)
@@ -707,10 +710,11 @@ async def get_session_messages_around(
 
     def _read(db):
         sid = _timeline_session_id(db, session_id, owner)
+        generation = db.get_conversation_generation(sid)
         page = read_around(db, sid, row_id, limit=limit)
         if page is None:
             raise HTTPException(status_code=404, detail="Prompt not found")
-        return {"session_id": sid, "profile": owner, **page}
+        return {"session_id": sid, "profile": owner, "conversation_generation": generation, **page}
 
     result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)
     result["messages"] = await asyncio.to_thread(

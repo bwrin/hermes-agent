@@ -611,6 +611,8 @@ def _clear_active_session_history(session: dict) -> None:
         edit_snapshots={},
     )
     session.pop("queued_prompts", None)
+    session.pop("_submit_user_row", None)
+    session.pop("todo_state", None)
     session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
     session["history_version"] = int(session.get("history_version", 0)) + 1
 
@@ -618,6 +620,9 @@ def _clear_active_session_history(session: dict) -> None:
     if agent is None:
         return
     agent._session_messages = []
+    agent._usage_anchor = None
+    agent._turn_base_usage_anchor = None
+    agent._pending_cli_user_message = None
     if hasattr(agent, "_last_flushed_db_idx"):
         agent._last_flushed_db_idx = 0
     if hasattr(agent, "_flushed_db_message_ids"):

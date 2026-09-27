@@ -85,6 +85,7 @@ class SessionLiveInfo(OpenModel):
     turn_started_at: float | None = None
     title: str = ""
     stored_session_id: str = ""
+    conversation_generation: int = 0
     desktop_contract: int | str | None = None
     version: str = ""
     release_date: str = ""

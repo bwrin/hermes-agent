@@ -49,6 +49,8 @@ export interface GatewayEvent<K extends GatewayEventName = GatewayEventName> {
   /** Per-session monotonic counter stamped by `tui_gateway/event_replay.py::_stamp_event`;
    *  absent on session-less broadcasts. */
   seq?: number
+  /** Durable clear generation captured before this session event was produced. */
+  conversation_generation?: number
   session_id?: string
   type: K
 }

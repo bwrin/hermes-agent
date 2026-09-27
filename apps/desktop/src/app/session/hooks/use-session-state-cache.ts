@@ -164,6 +164,7 @@ export function useSessionStateCache({
   // Runtime id whose transcript currently occupies `$messages` — lets the
   // flush below tell a same-session refresh from a thread switch.
   const viewSessionIdRef = useRef<string | null>(null)
+  const viewTranscriptAuthorityEpochRef = useRef(0)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -300,7 +301,8 @@ export function useSessionStateCache({
     // polluted view becomes the next switch's baseline. Only carry errors
     // across a same-session refresh; our cached state already keeps its own.
     const nextMessages =
-      viewSessionIdRef.current === pending.sessionId
+      viewSessionIdRef.current === pending.sessionId &&
+      viewTranscriptAuthorityEpochRef.current === (pending.state.transcriptAuthorityEpoch ?? 0)
         ? preserveLocalAssistantErrors(pending.state.messages, currentMessages)
         : pending.state.messages
 
@@ -309,6 +311,7 @@ export function useSessionStateCache({
     }
 
     viewSessionIdRef.current = pending.sessionId
+    viewTranscriptAuthorityEpochRef.current = pending.state.transcriptAuthorityEpoch ?? 0
 
     syncRuntimeMetadataToView(pending.state)
     setBusy(pending.state.busy)

@@ -65,6 +65,84 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     sockets = FakeWebSocket.instances as unknown as FakeWebSocket[]
   })
 
+  it('fences an old replay and history response when a clear arrives while reconnect replay is held', async () => {
+    const client = makeClient()
+    const seen: string[] = []
+    client.onEvent(event => seen.push(event.type))
+    const requestHandler = vi.fn()
+    client.onRequest(requestHandler)
+    const first = client.connect('ws://x')
+    sockets[0].open()
+    await first
+    sockets[0].serverFrame({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: {
+        type: 'message.complete',
+        session_id: 'chat',
+        seq: 3,
+        conversation_generation: 0
+      }
+    })
+    client.invalidate('reconnect')
+    const second = client.connect('ws://x')
+    const socket = sockets[1]
+    socket.open()
+    await second
+    await vi.waitFor(() => expect(socket.lastRequest().method).toBe('session.events.since'))
+    const replay = socket.lastRequest()
+    const history = client.request('session.history', { session_id: 'chat' })
+    const historyRequest = socket.lastRequest()
+    const rejected = expect(history).rejects.toThrow(/conversation was cleared/)
+    seen.length = 0
+
+    socket.serverFrame({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: {
+        type: 'session.conversation_cleared',
+        session_id: 'chat',
+        seq: 8,
+        conversation_generation: 1,
+        payload: { stored_session_id: 'stored', session_ids: ['stored'], conversation_generation: 1 }
+      }
+    })
+    socket.serverFrame({
+      jsonrpc: '2.0',
+      id: historyRequest.id,
+      result: {
+        session_id: 'chat',
+        conversation_generation: 0,
+        messages: [{ role: 'assistant', content: 'old' }],
+        open_requests: [{ id: 'old-prompt', method: 'clarify', params: { session_id: 'chat' } }]
+      }
+    })
+    socket.serverFrame({
+      jsonrpc: '2.0',
+      id: replay.id,
+      result: {
+        events: [{ type: 'message.complete', session_id: 'chat', seq: 4, conversation_generation: 0 }],
+        latest_seq: 4,
+        truncated: false
+      }
+    })
+    await rejected
+    expect(requestHandler).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(seen).toEqual(['session.conversation_cleared']))
+    socket.serverFrame({
+      jsonrpc: '2.0',
+      method: 'event',
+      params: {
+        type: 'message.complete',
+        session_id: 'chat',
+        seq: 9,
+        conversation_generation: 1
+      }
+    })
+    expect(seen).toEqual(['session.conversation_cleared', 'message.complete'])
+    client.close()
+  })
+
   it('records per-session seq watermarks from live events', async () => {
     const client = makeClient()
     const p = client.connect('ws://x')

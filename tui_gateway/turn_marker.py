@@ -113,14 +113,17 @@ def _update(home: Path | str, session_key: str, mutate, what: str) -> None:
 
 
 def record_turn_start(home: Path | str, session_key: str, prompt: str, *, attempts: int = 0,
-                      auto_continue: bool = True, notification_category: str | None = None) -> None:
+                      auto_continue: bool = True, notification_category: str | None = None,
+                      conversation_generation: int = 0) -> None:
     """Persist the marker for a turn that is about to run. ``attempts`` = how many auto-continues led to
     this run (0 for a user-initiated turn); the crash-loop breaker reads it back on the next resume."""
-    if not session_key or not prompt:
+    if (not session_key or not prompt or type(conversation_generation) is not int
+            or conversation_generation < 0):
         return
     now = time.time()
     entry = {"attempts": max(0, int(attempts)), "prompt": prompt[:_MAX_PROMPT_CHARS], "started_at": now,
-             "auto_continue": bool(auto_continue), **_writer_identity()}
+             "auto_continue": bool(auto_continue), "conversation_generation": conversation_generation,
+             **_writer_identity()}
     if notification_category == "diagnostic":
         entry["notification_category"] = notification_category
     # Identity only — never the prompt: this log is read on crash triage and must not carry turn content.
@@ -144,8 +147,14 @@ def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | Non
         prompt = str(entry.get("prompt") or "") if isinstance(entry, dict) else ""
         if not prompt.strip():
             return None
+        # Legacy markers belong to the original conversation. Malformed generations
+        # must never grant permission to recover content after Clear Chat.
+        generation = entry.get("conversation_generation", 0)
+        if type(generation) is not int or generation < 0:
+            return None
         return {"attempts": max(0, int(entry.get("attempts") or 0)), "prompt": prompt, "started_at": _started_at(entry),
                 "auto_continue": bool(entry.get("auto_continue", True)),
+                "conversation_generation": generation,
                 # Writer identity when present: extra keys only, so a marker written by an older build still reads.
                 **{k: entry[k] for k in ("writer_pid", "writer_start_time") if entry.get(k) is not None},
                 **({"notification_category": "diagnostic"}

@@ -705,6 +705,7 @@ export interface SessionMessage {
 }
 
 export interface SessionMessagesResponse {
+  conversation_generation?: number
   /** Profile the page was read from (the serving process's own when the
    *  request named none). Absent on backends that predate the field. */
   profile?: string
@@ -719,6 +720,7 @@ export interface SessionMessagesResponse {
 }
 
 export interface SessionResumeResult {
+  conversation_generation?: number
   /** Present when the backend found a fresh crash-interrupted turn and
    *  scheduled its automatic continuation; the turn arrives as a normal
    *  message.start stream right after this resume. */

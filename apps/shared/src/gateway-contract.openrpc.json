@@ -3031,6 +3031,24 @@
       }
     },
     {
+      "name": "session.clear_bot_chat",
+      "summary": "Clear the existing canonical Bot Chat after user confirmation; refuse active work and pending delivery.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionClearBotChatParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionClearBotChatResult"
+        }
+      }
+    },
+    {
       "name": "session.close",
       "summary": "Tear down a live session (its stored row stays resumable).",
       "params": [
@@ -27424,6 +27442,11 @@
             "title": "Session Id",
             "type": "string"
           },
+          "conversation_generation": {
+            "default": 0,
+            "title": "Conversation Generation",
+            "type": "integer"
+          },
           "message_count": {
             "title": "Message Count",
             "type": "integer"
@@ -27910,6 +27933,11 @@
             "title": "Session Id",
             "type": "string"
           },
+          "conversation_generation": {
+            "default": 0,
+            "title": "Conversation Generation",
+            "type": "integer"
+          },
           "stored_session_id": {
             "title": "Stored Session Id",
             "type": "string"
@@ -28015,6 +28043,49 @@
           "info"
         ],
         "title": "SessionBranchWholeResult",
+        "type": "object"
+      },
+      "SessionClearBotChatParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "SessionClearBotChatParams",
+        "type": "object"
+      },
+      "SessionClearBotChatResult": {
+        "additionalProperties": false,
+        "properties": {
+          "cleared": {
+            "title": "Cleared",
+            "type": "boolean"
+          },
+          "messages_cleared": {
+            "title": "Messages Cleared",
+            "type": "integer"
+          },
+          "conversation_generation": {
+            "default": 0,
+            "title": "Conversation Generation",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cleared",
+          "messages_cleared"
+        ],
+        "title": "SessionClearBotChatResult",
         "type": "object"
       },
       "SessionCloseParams": {
@@ -28638,6 +28709,38 @@
         "title": "SessionControlUpdatePayload",
         "type": "object"
       },
+      "SessionConversationClearedPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "stored_session_id": {
+            "title": "Stored Session Id",
+            "type": "string"
+          },
+          "session_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Session Ids",
+            "type": "array"
+          },
+          "conversation_generation": {
+            "title": "Conversation Generation",
+            "type": "integer"
+          },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stored_session_id",
+          "session_ids",
+          "conversation_generation",
+          "profile"
+        ],
+        "title": "SessionConversationClearedPayload",
+        "type": "object"
+      },
       "SessionCorrectionParams": {
         "additionalProperties": false,
         "properties": {
@@ -28868,6 +28971,11 @@
             "title": "Session Id",
             "type": "string"
           },
+          "conversation_generation": {
+            "default": 0,
+            "title": "Conversation Generation",
+            "type": "integer"
+          },
           "stored_session_id": {
             "title": "Stored Session Id",
             "type": "string"
@@ -29056,6 +29164,11 @@
             "default": "",
             "title": "Stored Session Id",
             "type": "string"
+          },
+          "conversation_generation": {
+            "default": 0,
+            "title": "Conversation Generation",
+            "type": "integer"
           },
           "desktop_contract": {
             "anyOf": [
@@ -29249,6 +29362,11 @@
       "SessionEventsSinceResult": {
         "additionalProperties": false,
         "properties": {
+          "conversation_generation": {
+            "default": 0,
+            "title": "Conversation Generation",
+            "type": "integer"
+          },
           "events": {
             "items": {
               "additionalProperties": true,
@@ -29582,6 +29700,11 @@
             },
             "title": "Messages",
             "type": "array"
+          },
+          "conversation_generation": {
+            "default": 0,
+            "title": "Conversation Generation",
+            "type": "integer"
           }
         },
         "required": [
@@ -29911,6 +30034,11 @@
             "default": "",
             "title": "Stored Session Id",
             "type": "string"
+          },
+          "conversation_generation": {
+            "default": 0,
+            "title": "Conversation Generation",
+            "type": "integer"
           },
           "desktop_contract": {
             "anyOf": [
@@ -30296,6 +30424,11 @@
           "session_id": {
             "title": "Session Id",
             "type": "string"
+          },
+          "conversation_generation": {
+            "default": 0,
+            "title": "Conversation Generation",
+            "type": "integer"
           },
           "message_count": {
             "title": "Message Count",
@@ -38335,6 +38468,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/SessionControlUpdatePayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "session.conversation_cleared",
+      "summary": "Discard transcript/cache state for this profile's conversation and reject older generations.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/SessionConversationClearedPayload"
           }
         }
       ]

@@ -123,18 +123,45 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
     that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible. An
     inert borrowed token (see _install_borrowed_lease) also lands here: present = slot held upstream."""
-    if session.get("active_session_lease") is not None:
-        return None
-    key = str(session.get("session_key") or "")
-    lease, limit_message = _claim_active_session_slot(
-        key, live_session_id=sid, surface=_session_source(session), profile_home=session.get("profile_home"))
-    if limit_message is None:
-        _attach_lease(session, lease)
-        return None
-    from hermes_cli.active_sessions import SESSION_NOT_OWNED
-    if getattr(limit_message, "reason", None) == SESSION_NOT_OWNED and _take_over_detached_runtime_lease(sid, session, key):
-        return None
-    return limit_message
+    previous_lease = session.get("active_session_lease")
+    if previous_lease is None:
+        key = str(session.get("session_key") or "")
+        lease, limit_message = _claim_active_session_slot(
+            key, live_session_id=sid, surface=_session_source(session), profile_home=session.get("profile_home"))
+        if limit_message is None:
+            _attach_lease(session, lease)
+        else:
+            from hermes_cli.active_sessions import SESSION_NOT_OWNED
+            if (getattr(limit_message, "reason", None) != SESSION_NOT_OWNED
+                    or not _take_over_detached_runtime_lease(sid, session, key)):
+                return limit_message
+    # Cold resumes keep no active-session slot. A sibling backend can therefore
+    # clear their durable chat while their old history remains in memory. Check
+    # only AFTER acquiring the slot: clear's registry guard now excludes us.
+    if "conversation_generation" in session:
+        try:
+            with _session_db(session) as db:
+                current = db.get_conversation_generation(session["session_key"]) if db is not None else None
+        except Exception:
+            logger.warning("Failed to verify conversation generation before turn", exc_info=True)
+            current = None
+        if current is None and session["conversation_generation"] == 0:
+            # Fresh in-memory chats remain usable when no store can be created.
+            # An unreadable EXISTING store cannot prove that clear never ran.
+            path = (Path(session["profile_home"]) / "state.db"
+                    if session.get("profile_home") else _launch_state_db_path())
+            try:
+                path.stat()
+            except FileNotFoundError:
+                current = 0
+            except OSError:
+                current = None
+        if current != session["conversation_generation"]:
+            if previous_lease is None and (lease := session.pop("active_session_lease", None)) is not None:
+                lease.release()
+            return ("Conversation was cleared in another window. Reopen the chat before sending."
+                    if current is not None else "Could not verify this conversation. Reopen the chat before sending.")
+    return None
 
 
 def _attach_lease(session: dict, lease) -> None:

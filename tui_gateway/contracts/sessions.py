@@ -75,6 +75,7 @@ class LiveSessionSnapshot(Result):
     live-unpersisted resume path; keys only some paths produce are optional."""
 
     session_id: str
+    conversation_generation: int = 0
     message_count: int
     messages: list[TranscriptMessage]
     info: SessionLiveInfo
@@ -137,6 +138,7 @@ class SessionCreateParams(ProfileParams):
 
 class SessionCreateResult(Result):
     session_id: str
+    conversation_generation: int = 0
     stored_session_id: str
     message_count: int
     messages: list[TranscriptMessage]
@@ -156,6 +158,7 @@ class SessionBranchStoredParams(ProfileParams):
 
 class SessionBranchStoredResult(Result):
     session_id: str
+    conversation_generation: int = 0
     stored_session_id: str
     message_count: int
     messages_omitted: bool
@@ -447,10 +450,25 @@ class SessionHistoryParams(SessionParams):
 class SessionHistoryResult(Result):
     count: int
     messages: list[TranscriptMessage]
+    conversation_generation: int = 0
 
 
 method("session.history", params=SessionHistoryParams, result=SessionHistoryResult,
        doc="The durable display transcript (ancestors included, row ids attached).")
+
+
+class SessionClearBotChatParams(ProfileParams):
+    pass
+
+
+class SessionClearBotChatResult(Result):
+    cleared: bool
+    messages_cleared: int
+    conversation_generation: int = 0
+
+
+method("session.clear_bot_chat", params=SessionClearBotChatParams, result=SessionClearBotChatResult,
+       doc="Clear the existing canonical Bot Chat after user confirmation; refuse active work and pending delivery.")
 
 
 class SessionUsageParams(SessionParams):
@@ -678,6 +696,7 @@ class SessionEventsSinceParams(SessionParams):
 
 
 class SessionEventsSinceResult(Result):
+    conversation_generation: int = 0
     events: list[dict[str, JsonValue]]  # recorded event frames' ``params`` objects
     latest_seq: int
     truncated: bool

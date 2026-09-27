@@ -183,6 +183,7 @@ def _record_turn_marker(session: dict, text: Any, *, auto_continue: bool = True,
             session["_active_turn_marker_key"] = marker_key
         record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt,
                           auto_continue=auto_continue,
+                          conversation_generation=session.get("conversation_generation", 0),
                           **({"notification_category": "diagnostic"}
                              if notification_category == "diagnostic" else {}))
         with session["history_lock"]:

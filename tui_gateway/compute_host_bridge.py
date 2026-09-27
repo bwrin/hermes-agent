@@ -54,13 +54,16 @@ def _compute_host_turn_frame(
     with session["history_lock"]:
         history = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
+        conversation_generation = int(session.get("conversation_generation", 0))
+        queue_generation = int(session.get("_queued_prompt_generation", 0))
         attached_images = list(image_paths if image_paths is not None else session.get("attached_images", []))
     return {
         "type": "turn.start", "sid": sid, "request_id": rid,
         "session_key": session.get("session_key") or sid, "text": text,
         **({"display_kind": display_kind} if display_kind else {}), "history": history,
         **({"display_metadata": display_metadata} if display_metadata else {}),
-        "history_version": history_version, "cols": int(session.get("cols", 80) or 80),
+        "history_version": history_version, "conversation_generation": conversation_generation,
+        "session_queue_generation": queue_generation, "cols": int(session.get("cols", 80) or 80),
         "cwd": _session_cwd(session),
         "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(session),
         "profile_home": session.get("profile_home") or "",

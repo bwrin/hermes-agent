@@ -82,9 +82,15 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
     if not enabled or age > freshness_secs or marker["attempts"] >= max_attempts:
         clear_turn_marker(home, session_key)  # stale/disabled/crash-looping: a manual message continues
         return None
-    if session.get("_auto_continue_scheduled"):
-        return None
-    session["_auto_continue_scheduled"] = True
+    with session["history_lock"]:
+        # A cold resume reads the new generation after Clear Chat, while a crash
+        # marker can still contain the old prompt. Claim scheduling under the same
+        # lock as clear so it cannot reset this runtime between the check and claim.
+        if marker.get("conversation_generation", 0) != session.get("conversation_generation", 0):
+            return None
+        if session.get("_auto_continue_scheduled"):
+            return None
+        session["_auto_continue_scheduled"] = True
     attempt, text = marker["attempts"] + 1, _auto_continue_note(marker["prompt"])
 
     def kickoff() -> None:

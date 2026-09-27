@@ -613,6 +613,8 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
                 "error": f"Live delivery admission could not be confirmed: {exc}. Do not resend.",
                 "evidence_file": dm_file})
         if record is not None:
+            if record["status"] == "cancelled":
+                return json.dumps({key: record[key] for key in ("status", "delivery_id", "error", "reason")} | {"to": label})
             command = _delivery_command(argv, dm_file, stdin_file=False, profile_home=profile_home, author=author)
             notification = json.loads(_spawn_delivery(command, label, task_id=task_id, agent=agent))
             result = dict(status=record["status"], delivery_id=record["delivery_id"], to=label,

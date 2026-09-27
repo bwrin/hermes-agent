@@ -534,6 +534,7 @@ export interface SessionLiveInfo {
   turn_started_at?: number | null
   title?: string
   stored_session_id?: string
+  conversation_generation?: number
   desktop_contract?: number | string | null
   version?: string
   release_date?: string
@@ -2796,6 +2797,7 @@ export interface SeedMessage {
 }
 export interface SessionCreateResult {
   session_id: string
+  conversation_generation?: number
   stored_session_id: string
   message_count: number
   messages: TranscriptMessage[]
@@ -2839,6 +2841,7 @@ export interface SessionBranchStoredParams {
 }
 export interface SessionBranchStoredResult {
   session_id: string
+  conversation_generation?: number
   stored_session_id: string
   message_count: number
   messages_omitted: boolean
@@ -2858,6 +2861,7 @@ export interface SessionResumeParams {
 }
 export interface SessionResumeResult {
   session_id: string
+  conversation_generation?: number
   message_count: number
   messages: TranscriptMessage[]
   info: SessionLiveInfo
@@ -2928,6 +2932,7 @@ export interface SessionActivateParams {
 }
 export interface SessionActivateResult {
   session_id: string
+  conversation_generation?: number
   message_count: number
   messages: TranscriptMessage[]
   info: SessionLiveInfo
@@ -3061,6 +3066,7 @@ export interface SessionCwdSetResult {
   turn_started_at?: number | null
   title?: string
   stored_session_id?: string
+  conversation_generation?: number
   desktop_contract?: number | string | null
   version?: string
   release_date?: string
@@ -3140,6 +3146,15 @@ export interface SessionHistoryParams {
 export interface SessionHistoryResult {
   count: number
   messages: TranscriptMessage[]
+  conversation_generation?: number
+}
+export interface SessionClearBotChatParams {
+  profile?: string | null
+}
+export interface SessionClearBotChatResult {
+  cleared: boolean
+  messages_cleared: number
+  conversation_generation?: number
 }
 export interface SessionUsageParams {
   session_id: string
@@ -3317,6 +3332,7 @@ export interface SessionEventsSinceParams {
   last_seen?: number | null
 }
 export interface SessionEventsSinceResult {
+  conversation_generation?: number
   events: Record<string, unknown>[]
   latest_seq: number
   truncated: boolean
@@ -4494,6 +4510,12 @@ export interface TipShowPayload {
   title?: string | null
   side?: string | null
 }
+export interface SessionConversationClearedPayload {
+  stored_session_id: string
+  session_ids: string[]
+  conversation_generation: number
+  profile: string
+}
 /** ``server._hydrate_resume_history``. */
 export interface SessionResumeProgressPayload {
   phase: string
@@ -5019,6 +5041,8 @@ export interface RpcMethods {
   'session.branch_stored': { params: SessionBranchStoredParams; result: SessionBranchStoredResult }
   /** session.branch of the whole history without echoing the copied transcript back. */
   'session.branch_whole': { params: SessionBranchWholeParams; result: SessionBranchWholeResult }
+  /** Clear the existing canonical Bot Chat after user confirmation; refuse active work and pending delivery. */
+  'session.clear_bot_chat': { params: SessionClearBotChatParams; result: SessionClearBotChatResult }
   /** Tear down a live session (its stored row stays resumable). */
   'session.close': { params: SessionCloseParams; result: SessionCloseResult }
   /** Manual /compress of an idle session, optionally focused on a topic. */
@@ -5328,6 +5352,7 @@ export const RPC_METHODS = [
   'session.branch',
   'session.branch_stored',
   'session.branch_whole',
+  'session.clear_bot_chat',
   'session.close',
   'session.compress',
   'session.context_breakdown',
@@ -5541,6 +5566,8 @@ export interface BackendGatewayEventMap {
   'review.summary': ReviewSummaryPayload
   /** Persisted goal / loop / heartbeat state changed. */
   'session.control.update': SessionControlUpdatePayload
+  /** Discard transcript/cache state for this profile's conversation and reject older generations. */
+  'session.conversation_cleared': SessionConversationClearedPayload
   /** Live session settings snapshot (``server._session_info``); also the ``info`` of create/resume/activate. */
   'session.info': SessionLiveInfo
   /** The backend reclaimed a live session out from under its clients. */
@@ -5645,6 +5672,7 @@ export const GATEWAY_EVENT_TYPES = [
   'request.cancel',
   'review.summary',
   'session.control.update',
+  'session.conversation_cleared',
   'session.info',
   'session.reclaimed',
   'session.resume_progress',

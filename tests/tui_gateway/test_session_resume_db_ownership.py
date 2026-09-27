@@ -57,6 +57,9 @@ class _RecordingDB:
     def get_session_by_title(self, _target):
         return None
 
+    def get_conversation_generation(self, _target):
+        return 0
+
     def resolve_resume_session_id(self, target):
         return target
 
@@ -241,12 +244,14 @@ def test_resume_hands_profile_db_to_deferred_history_worker(profile_dbs, monkeyp
     """Incremental hydration owns the profile handle until its read completes."""
     history_started = threading.Event()
     release_history = threading.Event()
-    close_completed = threading.Event()
-
     class _BlockingDB(_RecordingDB):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.close_completed = threading.Event()
+
         def close(self):
             super().close()
-            close_completed.set()
+            self.close_completed.set()
 
         def get_resume_conversations(self, _target):
             history_started.set()
@@ -270,12 +275,12 @@ def test_resume_hands_profile_db_to_deferred_history_worker(profile_dbs, monkeyp
         )
         sid = resp["result"]["session_id"]
         db = profile_dbs[0]
-        assert history_started.wait(timeout=1.0)
+        assert history_started.wait(timeout=2.0)
         assert db.closed == 0
 
         release_history.set()
-        assert server._sessions[sid]["resume_history_ready"].wait(timeout=1.0)
-        assert close_completed.wait(timeout=1.0)
+        assert server._sessions[sid]["resume_history_ready"].wait(timeout=2.0)
+        assert db.close_completed.wait(timeout=2.0)
         assert db.closed == 1
     finally:
         release_history.set()

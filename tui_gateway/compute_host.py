@@ -308,6 +308,21 @@ class ComputeHost:
         sid = str(frame.get("sid") or "")
         session = server._sessions.get(sid)
         if session is not None:
+            generation = int(frame.get("conversation_generation", 0))
+            with session["history_lock"]:
+                current_generation = int(session.get("conversation_generation", 0))
+                if generation < current_generation:
+                    raise ValueError("turn belongs to an older conversation generation")
+                if generation > current_generation:
+                    if session.get("running"):
+                        raise ValueError("cannot reset a running compute-host conversation")
+                    server._clear_active_session_history(session)
+                    session.update(
+                        history=list(frame.get("history") or []),
+                        conversation_generation=generation,
+                        history_version=int(frame.get("history_version", 0)),
+                        _queued_prompt_generation=int(frame.get("session_queue_generation", 0)),
+                    )
             session["transport"] = self._transport
             if frame.get("cols") is not None:
                 session["cols"] = int(frame.get("cols") or 80)
@@ -375,7 +390,8 @@ class ComputeHost:
                 server._init_session(
                     sid, key, agent, list(history), cols=int(frame.get("cols") or 80),
                     cwd=str(frame.get("cwd") or "") or None, session_db=session_db,
-                    source=frame.get("source"))
+                    source=frame.get("source"),
+                    conversation_generation=int(frame.get("conversation_generation", 0)))
             finally:
                 reset_transport(token)
         except Exception:
@@ -385,6 +401,7 @@ class ComputeHost:
                 "agent": agent, "session_key": key, "history": list(history),
                 "history_lock": threading.Lock(),
                 "history_version": int(frame.get("history_version") or 0), "inflight_turn": None,
+                "conversation_generation": int(frame.get("conversation_generation", 0)),
                 "created_at": time.time(), "last_active": time.time(), "running": False,
                 "attached_images": [], "image_counter": 0,
                 "cwd": str(frame.get("cwd") or os.getcwd()), "cols": int(frame.get("cols") or 80),
@@ -395,6 +412,7 @@ class ComputeHost:
                 "transport": self._transport}
         session = server._sessions[sid]
         session["transport"] = self._transport
+        session["_queued_prompt_generation"] = int(frame.get("session_queue_generation", 0))
         # The host pipe names no login; the record carries the one the gateway stamped at creation.
         session["auth_user_id"] = frame.get("auth_user_id")
         session["profile_home"] = profile_home or session.get("profile_home")

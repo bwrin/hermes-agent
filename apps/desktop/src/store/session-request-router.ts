@@ -1,3 +1,5 @@
+import { getApiRequestConnection, getApiRequestProfile } from '@/api/client'
+import { captureConversationRead } from '@/lib/conversation-generation'
 import { requestGatewayForAgent, requestGatewayForProfile, retainGatewayForSessionTurn } from '@/store/gateway'
 
 import { resetBackgroundPollingGuardAfterRebind } from './session-gone-latch'
@@ -168,7 +170,7 @@ export function sessionRpcNeedsProfileRoute(ownerProfile: SessionOwnerScope | un
  * serves that profile (keeps the primary's reauth-aware reconnect path).
  * The route is decided at CALL time, not at swap time.
  */
-export function requestForSessionProfile<T>(
+function dispatchForSessionProfile<T>(
   ownerProfile: SessionOwnerScope | undefined,
   ambientRequest: <R>(
     method: string,
@@ -222,4 +224,36 @@ export function requestForSessionProfile<T>(
   return withRoutedTurnLease(null, profile, method, params, () =>
     requestGatewayForProfile<T>(profile, method, params, timeoutMs, signal)
   )
+}
+
+/** Read authority is captured before the RPC, independently of later focus changes. */
+export function requestForSessionProfile<T>(...args: Parameters<typeof dispatchForSessionProfile<T>>): Promise<T> {
+  const [owner, , method, params = {}] = args
+
+  if (!['session.resume', 'session.activate', 'session.history'].includes(method)) {
+    return dispatchForSessionProfile<T>(...args)
+  }
+
+  const scope = isRoute(owner)
+    ? owner
+    : { connectionId: getApiRequestConnection(), profile: owner || getApiRequestProfile() }
+
+  const requestedId = typeof params.session_id === 'string' ? params.session_id : ''
+  const checkConversation = captureConversationRead(requestedId, scope)
+
+  return dispatchForSessionProfile<T>(...args).then(result => {
+    const snapshot = result as {
+      conversation_generation?: number
+      resumed?: string
+      stored_session_id?: string
+      info?: { conversation_generation?: number; stored_session_id?: string }
+    }
+
+    checkConversation(
+      snapshot.conversation_generation ?? snapshot.info?.conversation_generation,
+      snapshot.stored_session_id || snapshot.resumed || snapshot.info?.stored_session_id || requestedId
+    )
+
+    return result
+  })
 }

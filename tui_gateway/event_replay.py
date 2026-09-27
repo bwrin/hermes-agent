@@ -17,6 +17,7 @@ import json
 import threading
 import uuid
 from collections import OrderedDict, deque
+from pathlib import Path
 
 # Seq counters live in-process, so a restart resets them to 1 while clients hold high
 # watermarks — events_since(sid, 97) would return [] with truncated=False forever. The
@@ -40,6 +41,9 @@ _replay_buffer_bytes: dict[str, int] = {}
 _replay_evicted_through: dict[str, int] = {}
 _replay_total_bytes = 0
 _replay_next_seq: dict[str, int] = {}
+# Ownership survives runtime teardown, but is bounded by the same ring eviction.
+_replay_owners: dict[str, tuple[str, str]] = {}
+_replay_generations: dict[str, int] = {}
 
 
 def replay_epoch() -> str:
@@ -47,7 +51,7 @@ def replay_epoch() -> str:
     return _REPLAY_EPOCH
 
 
-def _stamp_event(obj: dict) -> None:
+def _stamp_event(obj: dict, *, owner: tuple[str, str] | None = None) -> None:
     """Stamp one outgoing event frame (mutates obj in place) and record it."""
     if obj.get("method") != "event":
         return
@@ -64,6 +68,9 @@ def _stamp_event(obj: dict) -> None:
         "utf-8", errors="surrogatepass"))
     with _replay_lock:
         global _replay_total_bytes
+        generation = int(params.get("conversation_generation", 0))
+        if generation < _replay_generations.get(sid, 0):
+            return  # a frame created before clear must not repopulate replay
         seq = _replay_next_seq.get(sid, 0) + 1
         _replay_next_seq[sid] = seq
         params["seq"] = seq
@@ -76,6 +83,18 @@ def _stamp_event(obj: dict) -> None:
                 _replay_total_bytes -= _replay_buffer_bytes.pop(oldest_sid, 0)
                 _replay_next_seq.pop(oldest_sid, None)
                 _replay_evicted_through.pop(oldest_sid, None)
+                _replay_owners.pop(oldest_sid, None)
+                _replay_generations.pop(oldest_sid, None)
+        if owner is not None:
+            _replay_owners[sid] = (str(Path(owner[0]).resolve()), owner[1])
+        _replay_generations[sid] = generation
+        if params.get("type") == "session.conversation_cleared":
+            # Keep sequence numbers monotonic so a pre-clear cursor receives the
+            # reset boundary, but can never replay the discarded conversation.
+            _replay_total_bytes -= _replay_buffer_bytes[sid]
+            _replay_buffer_bytes[sid] = 0
+            buf.clear()
+            _replay_evicted_through[sid] = seq - 1
         if size > _REPLAY_BUFFER_BYTES_MAX or size > _REPLAY_PROCESS_BYTES_MAX:
             _replay_evicted_through[sid] = seq
             return
@@ -97,15 +116,74 @@ def _stamp_event(obj: dict) -> None:
                     break
 
 
+def clear_conversation_replay(profile_home: str | Path, session_ids: list[str], payload: dict) -> None:
+    """Record the reset for retained runtime IDs, including those already reaped."""
+    home, ids = str(Path(profile_home).resolve()), set(session_ids)
+    generation = int(payload["conversation_generation"])
+    with _replay_lock:
+        owners = [(sid, owner) for sid, owner in _replay_owners.items()
+                  if owner[0] == home and owner[1] in ids
+                  and _replay_generations.get(sid, 0) < generation]
+    for sid, owner in owners:
+        _stamp_event({"method": "event", "params": {
+            "type": "session.conversation_cleared", "session_id": sid,
+            "conversation_generation": generation, "payload": payload,
+        }}, owner=owner)
+
+
+def _refresh_replay_generation(sid: str) -> None:
+    """A sibling backend's clear cannot broadcast into this process's rings."""
+    with _replay_lock:
+        owner = _replay_owners.get(sid)
+        observed = _replay_generations.get(sid, 0)
+    if owner is None:
+        return
+    path = Path(owner[0]) / "state.db"
+    if not path.is_file():
+        return  # newly created, not-yet-persisted sessions have no durable clear
+    from hermes_state import SessionDB
+    db = SessionDB(path, read_only=True)
+    try:
+        generation = db.get_conversation_generation(owner[1])
+    finally:
+        db.close()
+    if generation <= observed:
+        return
+    with _replay_lock:
+        if _replay_owners.get(sid) != owner or _replay_generations.get(sid, 0) >= generation:
+            return
+        global _replay_total_bytes
+        _replay_total_bytes -= _replay_buffer_bytes[sid]
+        _replay_buffer_bytes[sid] = 0
+        _replay_buffers[sid].clear()
+        # Even a client at the final pre-clear sequence must refetch. Unlike a
+        # local clear, this process has no profile-aware event to broadcast.
+        seq = _replay_next_seq.get(sid, 0) + 1
+        _replay_next_seq[sid] = _replay_evicted_through[sid] = seq
+        _replay_generations[sid] = generation
+
+
 def events_since(sid: str, last_seen: int) -> list[dict]:
     """Recorded EVENT OBJECTS (each frame's ``params`` dict) with seq > last_seen for *sid*.
 
     Returning the full JSON-RPC envelope would make every replayed event fail the
     client's ``event.type`` gate and be silently dropped.
     """
+    return replay_snapshot(sid, last_seen)["events"]
+
+
+def replay_snapshot(sid: str, last_seen: int) -> dict:
+    """Read frames, cursor, and reset generation from the same replay boundary."""
+    _refresh_replay_generation(sid)
     with _replay_lock:
         buf = _replay_buffers.get(sid or "")
-        return [event for seq, event, _size in buf if seq > last_seen] if buf else []
+        events = [event for seq, event, _size in buf if seq > last_seen] if buf else []
+        return {
+            "events": events, "count": len(events),
+            "latest_seq": _replay_next_seq.get(sid or "", 0),
+            "truncated": last_seen < _replay_evicted_through.get(sid or "", 0),
+            "conversation_generation": _replay_generations.get(sid or "", 0),
+        }
 
 
 def is_truncated(sid: str, last_seen: int) -> bool:
@@ -129,6 +207,8 @@ def reset_replay_state() -> None:
         _replay_buffer_bytes.clear()
         _replay_evicted_through.clear()
         _replay_next_seq.clear()
+        _replay_owners.clear()
+        _replay_generations.clear()
         _replay_total_bytes = 0
 
 

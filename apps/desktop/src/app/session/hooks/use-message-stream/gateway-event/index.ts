@@ -16,6 +16,7 @@ import { isSessionGone } from '@/store/session-gone-latch'
 import { noteSessionEvent } from '@/store/session-states'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 
+import { admitConversationEvent, useConversationClear } from './conversation-clear'
 import { handleDesktopBridgeEvent } from './desktop-bridge'
 import { handleInputRequestEvent } from './input-requests'
 import { handleLifecycleEvent } from './lifecycle'
@@ -92,6 +93,7 @@ const HANDLERS: GatewayEventHandler[] = [
 
 /** The gateway-event dispatcher, extracted from useMessageStream. */
 export function useGatewayEventHandler(deps: GatewayEventDeps) {
+  useConversationClear(deps)
   const { activeSessionIdRef, compactedTurnRef, refreshHermesConfig, sessionStateByRuntimeIdRef } = deps
 
   // One pin per concurrent unscoped stream, not a single shared slot: two chats
@@ -135,6 +137,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
   return useCallback(
     (event: GatewayEvent) => {
+      if (!admitConversationEvent(event, deps)) {
+        return
+      }
+
       const payload = event.payload as GatewayEventPayload | undefined
 
       // "From the active profile" must mean "from the active SOURCE": every

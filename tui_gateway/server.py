@@ -649,8 +649,13 @@ def write_json(obj: dict) -> bool:
     Every event frame gets a per-session monotonic ``seq`` + replay-ring entry so ``session.events.since`` can resume."""
     from tui_gateway.event_replay import _stamp_event
     from tui_gateway.hosted_room_member_activity import project_room_member_activity
-    _stamp_event(obj)
     params = obj.get("params")
+    sid = (params or {}).get("session_id") if isinstance(params, dict) else ""
+    session = _sessions.get(sid) if sid else None
+    owner = None
+    if session is not None and (key := session.get("session_key")):
+        owner = (str(_session_home(session).resolve()), str(key))
+    _stamp_event(obj, owner=owner)
     if obj.get("method") == "event" or (isinstance(obj.get("id"), str) and "method" in obj):
         # Event notifications AND server→client requests carry ``params.session_id``; both route to the
         # owning session's transport. A room member's hidden session has no transport: its frames would
@@ -665,6 +670,8 @@ def write_json(obj: dict) -> bool:
 def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
     _contracts.check_payload(event, payload)
     params: dict = {"type": event, "session_id": sid, **({"payload": payload} if payload is not None else {})}
+    if sid and (session := _sessions.get(sid)) is not None:
+        params["conversation_generation"] = int(session.get("conversation_generation", 0))
     return {"jsonrpc": "2.0", "method": "event", "params": params}
 
 
@@ -2165,8 +2172,8 @@ def _current_profile_name() -> str:
 # v5 ws_max_size >16 MiB file.attach frames; v6 plugins.manage rows carry the canonical registry key;
 # v7 blocking prompts are JSON-RPC server->client requests (`srq-<n>` frames, `open_requests` replay) — a v6
 # backend still emits `<kind>.request` notifications the renderer no longer listens for.
-# v8 session.clear_bot_chat clears the title-resolved canonical row without client-side identity state.
-DESKTOP_BACKEND_CONTRACT = 8
+# v9 canonical chat clear fences deliveries, provider context and client transcript generations.
+DESKTOP_BACKEND_CONTRACT = 9
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:
@@ -2287,6 +2294,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "running": bool(sess.get("running")), "turn_started_at": _turn_started_at(session),
         "title": _session_live_title(sess, session_key) if session_key else "",
         "stored_session_id": session_key or "", "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+        "conversation_generation": int(sess.get("conversation_generation", 0)),
         "version": "", "release_date": "", "update_behind": None, "update_command": "",
         "usage": _session_usage_snapshot(session),
         "profile_name": profile_name_for_home(sess.get("profile_home")) or _current_profile_name(),
@@ -2633,12 +2641,12 @@ def _hydrate_session_cwd(sid: str, key: str, session_db, profile_home: str | Non
 def _init_session(
     sid: str, key: str, agent, history: list, cols: int = 80, cwd: str | None = None,
     session_db=None, source: str | None = None, profile_home: str | None = None,
-    explicit_cwd: bool = False):
+    explicit_cwd: bool = False, conversation_generation: int = 0):
     now = time.time()
     with _sessions_lock:
         _sessions[sid] = {
             "agent": agent, "session_key": key, "history": history, "history_lock": threading.Lock(),
-            "history_version": 0, "inflight_turn": None, "created_at": now, "last_active": now,
+            "history_version": 0, "conversation_generation": conversation_generation, "inflight_turn": None, "created_at": now, "last_active": now,
             "running": False, "attached_images": [], "image_counter": 0, "cwd": cwd or _completion_cwd(),
             "explicit_cwd": bool(explicit_cwd), "cols": cols, "slash_worker": None,
             "show_reasoning": _load_show_reasoning(), "source": _resolve_session_source(source),
@@ -2706,7 +2714,7 @@ def _deferred_session_record(
         "close_on_disconnect": close_on_disconnect, "active_session_lease": lease, "cols": cols,
         "created_at": now, "cwd": cwd, "display_history_prefix": display_history_prefix or [],
         "edit_snapshots": {}, "explicit_cwd": bool(explicit_cwd), "history": history,
-        "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
+        "history_lock": threading.Lock(), "history_version": 0, "conversation_generation": 0, "image_counter": 0,
         "inflight_turn": None, "last_active": now, "lazy": lazy, "model_override": model_override,
         "pending_title": None,
         "profile_home": str(profile_home) if profile_home is not None else None,
@@ -2744,6 +2752,12 @@ def _claim_or_reuse_live(sid: str, session_key: str, record: dict, lease) -> tup
             # The reap is cancelled by the guarded reuse (_reattach_refusal), not here: a rejected
             # reattach must leave an in-flight orphan interrupt polling.
             return live
+        if "conversation_generation" in record:
+            with _session_db(record) as db:
+                if db is None or db.get_conversation_generation(session_key) != record["conversation_generation"]:
+                    if lease is not None:
+                        lease.release()
+                    raise ValueError("Conversation was cleared while resuming; open it again.")
         with _sessions_lock:
             _sessions[sid] = record
             _register_session_cwd(_sessions[sid])
@@ -2994,6 +3008,7 @@ def _live_session_payload(
     sid: str, session: dict, *, cols: int | None = None, touch: bool = False,
     transport: Transport | None = None, omit_messages: bool = False) -> dict:
     with session["history_lock"]:
+        conversation_generation = int(session.get("conversation_generation", 0))
         if cols is not None:
             session["cols"] = cols
         if transport is not None:
@@ -3018,11 +3033,13 @@ def _live_session_payload(
     payload = {
         "info": _fallback_session_info(session), "message_count": len(history) if omit_messages else len(messages),
         "messages": messages,
+        "conversation_generation": conversation_generation,
         "messages_omitted": omit_messages, "running": running, "turn_started_at": turn_started_at,
         "session_id": sid, "session_key": _session_lookup_key(session, fallback=sid),
         "started_at": float(session.get("created_at") or time.time()),
         "status": _session_live_status(sid, session),
     }
+    payload["info"]["conversation_generation"] = conversation_generation
     for key, value in (("inflight", inflight), ("queued", queued),
                        ("pending_approval", _pending_approval_request_payload(str(session.get("session_key") or ""))),
                        ("open_requests", _open_requests(sid)),

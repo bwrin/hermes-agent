@@ -17,7 +17,7 @@ import uuid
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Optional, Sequence
 
 from hermes_constants import get_default_hermes_root, get_hermes_home, named_profile_is_live
 from utils import atomic_json_write
@@ -361,11 +361,11 @@ def _pid_liveness(pid: Any, process_start_time: Any = None, *, lenient: bool = F
 
 def _prune_dead(
     entries: list[dict[str, Any]], *, strict: bool = False,
-    target_session_id: str | None = None, target_pid: int | None = None,
+    target_session_id: str | Sequence[str] | None = None, target_pid: int | None = None,
 ) -> list[dict[str, Any]]:
     """Keep entries whose owner is alive; tracked/strict entries must be provably so.
 
-    With ``target_session_id`` only THAT session's owner has to be provable: an
+    With ``target_session_id`` only those sessions' owners have to be provable: an
     unrelated sibling whose liveness is unknowable (pid present, start time
     unreadable — an LXC ``/proc`` after a backend restart) stays in the live set,
     so it still fences its own session and still counts toward capacity, but no
@@ -374,6 +374,7 @@ def _prune_dead(
     reclaims this process's own leases).
     """
     targeted = target_session_id is not None or target_pid is not None
+    target_ids = {target_session_id} if isinstance(target_session_id, str) else set(target_session_id or ())
     live: list[dict[str, Any]] = []
     for entry in entries:
         tracked = strict or bool(entry.get("track_liveness"))
@@ -383,8 +384,7 @@ def _prune_dead(
         if state is None:
             if (
                 not targeted
-                or (target_session_id is not None
-                    and str(entry.get("session_id") or "") == str(target_session_id))
+                or str(entry.get("session_id") or "") in target_ids
                 or (target_pid is not None and entry.get("pid") == target_pid)
             ):
                 raise ActiveSessionRegistryError("active session owner liveness is unknown")
@@ -744,11 +744,17 @@ def active_session_registry_snapshot(
 
 @contextmanager
 def active_session_liveness_guard(
-    session_id: str, *, registry_home: str | Path | None = None,
+    session_id: str | Sequence[str], *, registry_home: str | Path | None = None,
     own_live_lease_ids: set[str] | None = None,
+    allowed_lease_ids: set[str] | None = None,
 ) -> Iterator[bool]:
-    """Hold the registry lock while reporting whether ``session_id`` is leased, so no
-    new backend can acquire a lease between the check and the caller's ``end_session``."""
+    """Hold admission while reporting any blocking owner of these sessions.
+
+    Clear may exempt its own locked, verified-idle runtime leases. Other
+    processes' warm runtimes cannot be reset here and always block mutation.
+    """
+    session_ids = {session_id} if isinstance(session_id, str) else set(session_id)
+    allowed = allowed_lease_ids or set()
     state_path, lock_path = _lease_paths(registry_home=registry_home)
     with _FileLock(lock_path):
         entries = _prune_dead(
@@ -756,7 +762,11 @@ def active_session_liveness_guard(
         )
         entries = _drop_self_orphans(entries, own_live_lease_ids)
         _write_entries(state_path, entries)
-        yield _holds_session(entries, session_id)
+        yield any(
+            str(entry.get("session_id") or "") in session_ids
+            and not (entry.get("pid") == os.getpid() and entry.get("lease_id") in allowed)
+            for entry in entries
+        )
 
 
 @contextmanager

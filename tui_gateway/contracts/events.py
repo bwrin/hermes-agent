@@ -367,6 +367,17 @@ event("session.info", SessionLiveInfo,  # type: ignore[arg-type]
       doc="Live session settings snapshot (``server._session_info``); also the ``info`` of create/resume/activate.")
 
 
+class SessionConversationClearedPayload(Payload):
+    stored_session_id: str
+    session_ids: list[str]
+    conversation_generation: int
+    profile: str
+
+
+event("session.conversation_cleared", SessionConversationClearedPayload,
+      doc="Discard transcript/cache state for this profile's conversation and reject older generations.")
+
+
 class ResumePhaseStatus(WireEnum):
     loading = "loading"
     complete = "complete"
