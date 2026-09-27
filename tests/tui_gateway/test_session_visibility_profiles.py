@@ -75,4 +75,3 @@ def test_visibility_survives_cold_resume_and_profile_switches(tmp_path, monkeypa
         for sid in set(server._sessions) - known:
             server._sessions.pop(sid, None)
         launch_db.close()
-
