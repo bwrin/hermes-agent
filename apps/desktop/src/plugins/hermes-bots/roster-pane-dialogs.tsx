@@ -66,6 +66,7 @@ export function renderRosterDialogs({
           setCreateOpen(false)
           void refetch()
         }}
+        onConfigureModel={setEditing}
         open={createOpen}
         roster={activeSourceRoster}
       />
@@ -86,7 +87,7 @@ export function renderRosterDialogs({
         }}
         onSubmit={name => {
           if (sectionDialog?.mode === 'rename') {
-            renameBotSection(sectionDialog.id, name)
+            renameBotSection(sectionDialog.id, name, roster)
           } else {
             const section = createBotSection(name, sectionDialog?.bot ? [sectionDialog.bot] : [])
 
